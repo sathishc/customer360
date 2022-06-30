@@ -1,0 +1,1542 @@
+{
+    "Parameters": {
+        "InstanceKeyPairParameter": {
+            "Description": "Amazon EC2 Key Pair source data instance",
+            "Type": "AWS::EC2::KeyPair::KeyName"
+        },
+        "VPCID": {
+            "Description": "Amazon VPC for the instances",
+            "Type": "AWS::EC2::VPC::Id"
+        },
+        "SubnetAz1": {
+            "Description": "Subnet 1 for lambda function in the same VPC",
+            "Type": "AWS::EC2::Subnet::Id"
+        },
+        "SubnetAz2": {
+            "Description": "Subnet 2 for lambda function in the same VPC",
+            "Type": "AWS::EC2::Subnet::Id"
+        },
+        "Sourcebucket": {
+            "Description": "Source bucket with library and scripts, do NOT change it unless you copied the source code to your own bucket",
+            "Type": "String",
+            "Default": "hhug-c360view"
+        },
+        "RDSPassword": {
+            "Description": "Password for postgreSql database, must begin with a letter and contain only alphanumeric characters, 8 to 16 lenght.",
+            "Type": "String",
+            "Default": "Tim3t0change",
+            "NoEcho": "true",
+            "MinLength": "8",
+            "MaxLength": "16",
+            "AllowedPattern": "[a-zA-Z][a-zA-Z0-9]*",
+            "ConstraintDescription": "must begin with a letter and contain only alphanumeric characters, 8 to 16 lenght."
+        }
+    },
+    "Metadata": {
+        "AWS::CloudFormation::Interface": {
+            "ParameterGroups": [
+                {
+                    "Label": {
+                        "default": "Network Configuration"
+                    },
+                    "Parameters": [
+                        "VPCID",
+                        "SubnetAz1",
+                        "SubnetAz2"
+                    ]
+                },
+                {
+                    "Label": {
+                        "default": "Amazon EC2 Configuration"
+                    },
+                    "Parameters": [
+                        "InstanceKeyPairParameter"
+                    ]
+                },
+                {
+                    "Label": {
+                        "default": "Source code"
+                    },
+                    "Parameters": [
+                        "Sourcebucket"
+                    ]
+                },
+                {
+                    "Label": {
+                        "default": "Database Password"
+                    },
+                    "Parameters": [
+                        "RDSPassword"
+                    ]
+                }
+            ],
+            "ParameterLabels": {
+                "VPCID": {
+                    "default": "VPC to deploy to"
+                }
+            }
+        }
+    },
+    "Resources": {
+        "RDSSource": {
+            "Type": "AWS::RDS::DBInstance",
+            "DeletionPolicy": "Snapshot",
+            "Properties": {
+                "AllocatedStorage": "200",
+                "DBInstanceClass": "db.r5.large",
+                "DBName": "sourcemf",
+                "Engine": "postgres",
+                "PubliclyAccessible": false,
+                "EngineVersion": "12.10",
+                "DBInstanceIdentifier": "sourcemf",
+                "MasterUserPassword": {
+                    "Ref": "RDSPassword"
+                },
+                "MasterUsername": "sourcemf",
+                "VPCSecurityGroups": [
+                    {
+                        "Ref": "RDSSourceSecurityGroup"
+                    }
+                ],
+                "Port": 5432,
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": "Source PostgreSQL Database"
+                    }
+                ]
+            }
+        },
+        "RDSInstanceSecret": {
+            "Type": "AWS::SecretsManager::Secret",
+            "Properties": {
+                "Name": "c360view-secret",
+                "Description": "This is c360 rds instance secret",
+                "SecretString": {
+                    "Fn::Join": [
+                        "",
+                        [
+                            "{\"username\":\"sourcemf\",\"password\":\"",
+                            {
+                                "Ref": "RDSPassword"
+                            },
+                            "\"}"
+                        ]
+                    ]
+                }
+            }
+        },
+        "RawDataS3Bucket": {
+            "Type": "AWS::S3::Bucket",
+            "DeletionPolicy": "Delete",
+            "Properties": {
+                "BucketName": {
+                    "Fn::Sub": "c360view-${AWS::Region}-${AWS::AccountId}-raw"
+                },
+                "VersioningConfiguration": {
+                    "Status": "Enabled"
+                }
+            }
+        },
+        "StageDataS3Bucket": {
+            "Type": "AWS::S3::Bucket",
+            "DeletionPolicy": "Delete",
+            "Properties": {
+                "BucketName": {
+                    "Fn::Sub": "c360view-${AWS::Region}-${AWS::AccountId}-stage"
+                },
+                "VersioningConfiguration": {
+                    "Status": "Enabled"
+                }
+            }
+        },
+        "AnalyticsDataS3Bucket": {
+            "Type": "AWS::S3::Bucket",
+            "DeletionPolicy": "Delete",
+            "Properties": {
+                "BucketName": {
+                    "Fn::Sub": "c360view-${AWS::Region}-${AWS::AccountId}-analytics"
+                },
+                "VersioningConfiguration": {
+                    "Status": "Enabled"
+                }
+            }
+        },
+        "c360Ec2Instance": {
+            "DependsOn": [
+                "c360EC2InstanceProfile",
+                "LambdaIngestionPostgresql"
+            ],
+            "Type": "AWS::EC2::Instance",
+            "Properties": {
+                "KeyName": {
+                    "Ref": "InstanceKeyPairParameter"
+                },
+                "ImageId": "ami-00ee4df451840fa9d",
+                "InstanceType": "t3.large",
+                "IamInstanceProfile": "EC2InstanceProfile-c360view",
+                "UserData": {
+                    "Fn::Base64": {
+                        "Fn::Sub": "#!/bin/bash -ex\nsudo yum install gcc -y\nsudo yum install python3.7 -y\nsudo yum install postgresql-devel -y\nmkdir copy-files\ncd copy-files\nwget https://raw.githubusercontent.com/aws-samples/build-a-360-degree-customer-view-with-aws/master/lambda/getgatables.zip\nwget https://raw.githubusercontent.com/aws-samples/build-a-360-degree-customer-view-with-aws/master/lambda/mf-generator.zip\nwget https://raw.githubusercontent.com/aws-samples/build-a-360-degree-customer-view-with-aws/master/lambda/crmapi.zip\nwget https://raw.githubusercontent.com/aws-samples/build-a-360-degree-customer-view-with-aws/master/lambda/getapi.zip\naws lambda update-function-code --function-name c360viewGetGaTables --zip-file fileb://getgatables.zip --region us-west-2\naws lambda update-function-code --function-name c360viewMFgenAccount --zip-file fileb://mf-generator.zip --region us-west-2\naws lambda update-function-code --function-name c360viewMFgenGBank --zip-file fileb://mf-generator.zip --region us-west-2\naws lambda update-function-code --function-name c360viewMFgenCard --zip-file fileb://mf-generator.zip --region us-west-2\naws lambda update-function-code --function-name c360viewCRMApi --zip-file fileb://crmapi.zip --region us-west-2\naws lambda update-function-code --function-name c360viewGetCRMApi --zip-file fileb://getapi.zip --region us-west-2                \nmkdir s3files\ncd s3files\nwget https://raw.githubusercontent.com/aws-samples/build-a-360-degree-customer-view-with-aws/master/library/awswrangler-0.0.12-glue-none-any.whl\nwget https://raw.githubusercontent.com/aws-samples/build-a-360-degree-customer-view-with-aws/master/library/n1_c360_dispositions.py\nwget https://raw.githubusercontent.com/aws-samples/build-a-360-degree-customer-view-with-aws/master/library/cust360_etl_mf_trans.py\nwget https://raw.githubusercontent.com/aws-samples/build-a-360-degree-customer-view-with-aws/master/data/visitors/ga_visitors.csv\nwget https://raw.githubusercontent.com/aws-samples/build-a-360-degree-customer-view-with-aws/master/library/c360_analytics.py\nwget https://raw.githubusercontent.com/aws-samples/build-a-360-degree-customer-view-with-aws/master/library/c360dynamodbload.q\naws s3 cp awswrangler-0.0.12-glue-none-any.whl s3://${StageDataS3Bucket}/library/awswrangler-0.0.12-glue-none-any.whl\naws s3 cp n1_c360_dispositions.py s3://${StageDataS3Bucket}/library/n1_c360_dispositions.py\naws s3 cp cust360_etl_mf_trans.py s3://${StageDataS3Bucket}/library/cust360_etl_mf_trans.py\naws s3 cp ga_visitors.csv s3://${StageDataS3Bucket}/data/visitors/ga_visitors.csv\naws s3 cp c360_analytics.py s3://${StageDataS3Bucket}/library/c360_analytics.py\naws s3 cp c360dynamodbload.q s3://${StageDataS3Bucket}/library/c360dynamodbload.q\nwget https://raw.githubusercontent.com/aws-samples/build-a-360-degree-customer-view-with-aws/master/data/GA/ga_sessions_20170724/ga_sessions_20170724.json\nwget https://raw.githubusercontent.com/aws-samples/build-a-360-degree-customer-view-with-aws/master/data/GA/ga_sessions_20170725/ga_sessions_20170725.json\nwget https://raw.githubusercontent.com/aws-samples/build-a-360-degree-customer-view-with-aws/master/data/GA/ga_sessions_20170726/ga_sessions_20170726.json\nwget https://raw.githubusercontent.com/aws-samples/build-a-360-degree-customer-view-with-aws/master/data/GA/ga_sessions_20170727/ga_sessions_20170727.json\nwget https://raw.githubusercontent.com/aws-samples/build-a-360-degree-customer-view-with-aws/master/data/GA/ga_sessions_20170728/ga_sessions_20170728.json\nwget https://raw.githubusercontent.com/aws-samples/build-a-360-degree-customer-view-with-aws/master/data/GA/ga_sessions_20170729/ga_sessions_20170729.json\nwget https://raw.githubusercontent.com/aws-samples/build-a-360-degree-customer-view-with-aws/master/data/GA/ga_sessions_20170730/ga_sessions_20170730.json\nwget https://raw.githubusercontent.com/aws-samples/build-a-360-degree-customer-view-with-aws/master/data/GA/ga_sessions_20170731/ga_sessions_20170731.json\naws s3 cp ga_sessions_20170724.json s3://${RawDataS3Bucket}/data/GA/ga_sessions_20170724/ga_sessions_20170724.json\naws s3 cp ga_sessions_20170725.json s3://${RawDataS3Bucket}/data/GA/ga_sessions_20170725/ga_sessions_20170725.json\naws s3 cp ga_sessions_20170726.json s3://${RawDataS3Bucket}/data/GA/ga_sessions_20170726/ga_sessions_20170726.json\naws s3 cp ga_sessions_20170727.json s3://${RawDataS3Bucket}/data/GA/ga_sessions_20170727/ga_sessions_20170727.json\naws s3 cp ga_sessions_20170728.json s3://${RawDataS3Bucket}/data/GA/ga_sessions_20170728/ga_sessions_20170728.json\naws s3 cp ga_sessions_20170729.json s3://${RawDataS3Bucket}/data/GA/ga_sessions_20170729/ga_sessions_20170729.json\naws s3 cp ga_sessions_20170730.json s3://${RawDataS3Bucket}/data/GA/ga_sessions_20170730/ga_sessions_20170730.json\naws s3 cp ga_sessions_20170731.json s3://${RawDataS3Bucket}/data/GA/ga_sessions_20170731/ga_sessions_20170731.json\nmkdir lambda-pg-generator\ncd lambda-pg-generator\npip3 install psycopg2-binary -t .\nwget https://raw.githubusercontent.com/aws-samples/build-a-360-degree-customer-view-with-aws/master/lambda/lambda-pg-generator/postgresql.py\nmysecret=${RDSInstanceSecret}\nsed -i \"s/c360view-secret-placeholder/$mysecret/g\" \"postgresql.py\"\nzip -r ../newlambda.zip postgresql.py psycopg2*\naws lambda update-function-code --function-name c360viewIngestionPostgresql --zip-file fileb://../newlambda.zip --region us-west-2\n"
+                    }
+                },
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": "c360Instance"
+                    }
+                ],
+                "NetworkInterfaces": [
+                    {
+                        "GroupSet": [
+                            {
+                                "Ref": "c360viewSecurityGroup"
+                            },
+                            {
+                                "Ref": "LambdaInstanceSecurityGroup"
+                            }
+                        ],
+                        "AssociatePublicIpAddress": "true",
+                        "DeviceIndex": "0",
+                        "DeleteOnTermination": "true"
+                    }
+                ]
+            }
+        },
+        "c360viewSecurityGroup": {
+            "Type": "AWS::EC2::SecurityGroup",
+            "Properties": {
+                "GroupDescription": "Enable SSH access via port 22",
+                "GroupName": "c360view-c360-Access",
+                "VpcId": {
+                    "Ref": "VPCID"
+                },
+                "SecurityGroupIngress": [
+                    {
+                        "IpProtocol": "tcp",
+                        "FromPort": "22",
+                        "ToPort": "22",
+                        "CidrIp": "172.31.0.0/16"
+                    }
+                ]
+            }
+        },
+        "InboundRuleAccess": {
+            "Type": "AWS::EC2::SecurityGroupIngress",
+            "Properties": {
+                "IpProtocol": "tcp",
+                "FromPort": 0,
+                "ToPort": 65535,
+                "SourceSecurityGroupId": {
+                    "Fn::GetAtt": [
+                        "c360viewSecurityGroup",
+                        "GroupId"
+                    ]
+                },
+                "GroupId": {
+                    "Fn::GetAtt": [
+                        "c360viewSecurityGroup",
+                        "GroupId"
+                    ]
+                }
+            }
+        },
+        "RDSSourceSecurityGroup": {
+            "Type": "AWS::EC2::SecurityGroup",
+            "Properties": {
+                "GroupDescription": "Enable SSH access via port 22",
+                "GroupName": "c360view-RDS-Source",
+                "VpcId": {
+                    "Ref": "VPCID"
+                },
+                "SecurityGroupIngress": [
+                    {
+                        "IpProtocol": "tcp",
+                        "FromPort": "5432",
+                        "ToPort": "5432",
+                        "SourceSecurityGroupId": {
+                            "Fn::GetAtt": [
+                                "LambdaInstanceSecurityGroup",
+                                "GroupId"
+                            ]
+                        }
+                    },
+                    {
+                        "IpProtocol": "tcp",
+                        "FromPort": "5432",
+                        "ToPort": "5432",
+                        "SourceSecurityGroupId": {
+                            "Fn::GetAtt": [
+                                "c360viewSecurityGroup",
+                                "GroupId"
+                            ]
+                        }
+                    },
+                    {
+                        "IpProtocol": "tcp",
+                        "FromPort": "22",
+                        "ToPort": "22",
+                        "CidrIp": "172.31.0.0/16"
+                    }
+                ]
+            }
+        },
+        "LambdaInstanceSecurityGroup": {
+            "Type": "AWS::EC2::SecurityGroup",
+            "Properties": {
+                "GroupDescription": "Enable SSH access via port 22",
+                "GroupName": "c360view-Lambda-Access",
+                "VpcId": {
+                    "Ref": "VPCID"
+                },
+                "SecurityGroupIngress": [
+                    {
+                        "IpProtocol": "tcp",
+                        "FromPort": "22",
+                        "ToPort": "22",
+                        "CidrIp": "172.31.0.0/16"
+                    }
+                ]
+            }
+        },
+        "c360EC2InstanceProfile": {
+            "Type": "AWS::IAM::InstanceProfile",
+            "Properties": {
+                "Path": "/",
+                "InstanceProfileName": "EC2InstanceProfile-c360view",
+                "Roles": [
+                    {
+                        "Ref": "c360EC2ExecutionRole"
+                    }
+                ]
+            }
+        },
+        "c360EC2ExecutionRole": {
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "RoleName": "EC2rolec360view",
+                "AssumeRolePolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Principal": {
+                                "Service": [
+                                    "ec2.amazonaws.com"
+                                ]
+                            },
+                            "Action": [
+                                "sts:AssumeRole"
+                            ]
+                        }
+                    ]
+                },
+                "Path": "/",
+                "Policies": [
+                    {
+                        "PolicyName": "root",
+                        "PolicyDocument": {
+                            "Version": "2012-10-17",
+                            "Statement": [
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "s3:*"
+                                    ],
+                                    "Resource": [
+                                        {
+                                            "Fn::Join": [
+                                                "",
+                                                [
+                                                    "arn:aws:s3:::",
+                                                    {
+                                                        "Ref": "RawDataS3Bucket"
+                                                    },
+                                                    "*"
+                                                ]
+                                            ]
+                                        },
+                                        {
+                                            "Fn::Join": [
+                                                "",
+                                                [
+                                                    "arn:aws:s3:::",
+                                                    {
+                                                        "Ref": "StageDataS3Bucket"
+                                                    },
+                                                    "*"
+                                                ]
+                                            ]
+                                        },
+                                        {
+                                            "Fn::Join": [
+                                                "",
+                                                [
+                                                    "arn:aws:s3:::",
+                                                    {
+                                                        "Ref": "AnalyticsDataS3Bucket"
+                                                    },
+                                                    "*"
+                                                ]
+                                            ]
+                                        }
+                                    ]
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "lambda:ListFunctions",
+                                        "lambda:ListEventSourceMappings",
+                                        "lambda:ListLayerVersions",
+                                        "lambda:ListLayers",
+                                        "lambda:GetAccountSettings",
+                                        "lambda:CreateEventSourceMapping"
+                                    ],
+                                    "Resource": "*"
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "secretsmanager:ListSecrets"
+                                    ],
+                                    "Resource": "*"
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "secretsmanager:GetSecretValue",
+                                        "secretsmanager:GetResourcePolicy",
+                                        "secretsmanager:DescribeSecret",
+                                        "secretsmanager:ListSecretVersionIds"
+                                    ],
+                                    "Resource": [
+                                        {
+                                            "Ref": "RDSInstanceSecret"
+                                        }
+                                    ]
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "lambda:*"
+                                    ],
+                                    "Resource": [
+                                        {
+                                            "Fn::Sub": "arn:aws:lambda:us-west-2:${AWS::AccountId}:function:c360viewIngestionPostgresql"
+                                        },
+                                        {
+                                            "Fn::Sub": "arn:aws:lambda:us-west-2:${AWS::AccountId}:function:c360viewGetGaTables"
+                                        },
+                                        {
+                                            "Fn::Sub": "arn:aws:lambda:us-west-2:${AWS::AccountId}:function:c360viewMFgenAccount"
+                                        },
+                                        {
+                                            "Fn::Sub": "arn:aws:lambda:us-west-2:${AWS::AccountId}:function:c360viewMFgenGBank"
+                                        },
+                                        {
+                                            "Fn::Sub": "arn:aws:lambda:us-west-2:${AWS::AccountId}:function:c360viewMFgenCard"
+                                        },
+                                        {
+                                            "Fn::Sub": "arn:aws:lambda:us-west-2:${AWS::AccountId}:function:c360viewCRMApi"
+                                        },
+                                        {
+                                            "Fn::Sub": "arn:aws:lambda:us-west-2:${AWS::AccountId}:function:c360viewGetCRMApi"
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        },
+        "GlueExecutionRole": {
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "RoleName": "Glue-role-c360view",
+                "AssumeRolePolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Principal": {
+                                "Service": [
+                                    "glue.amazonaws.com",
+                                    "lambda.amazonaws.com",
+                                    "ec2.amazonaws.com"
+                                ]
+                            },
+                            "Action": [
+                                "sts:AssumeRole"
+                            ]
+                        }
+                    ]
+                },
+                "Path": "/",
+                "ManagedPolicyArns": [
+                    "arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole",
+                    "arn:aws:iam::aws:policy/AmazonAthenaFullAccess",
+                    "arn:aws:iam::aws:policy/service-role/AmazonElasticMapReduceRole"
+                ],
+                "Policies": [
+                    {
+                        "PolicyName": "root",
+                        "PolicyDocument": {
+                            "Version": "2012-10-17",
+                            "Statement": [
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "logs:*"
+                                    ],
+                                    "Resource": "arn:aws:logs:*:*:*"
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "s3:*",
+                                        "lambda:*",
+                                        "ec2:CreateNetworkInterface",
+                                        "ec2:DescribeNetworkInterfaces",
+                                        "ec2:DeleteNetworkInterface",
+                                        "ec2:DescribeSecurityGroups",
+                                        "ec2:DescribeSubnets",
+                                        "ec2:DescribeVpcs",
+                                        "glue:SearchTables",
+                                        "glue:GetDatabase",
+                                        "glue:GetTables",
+                                        "glue:GetPartitions",
+                                        "lakeformation:GetDataAccess",
+                                        "glue:GetDatabases",
+                                        "glue:GetTable",
+                                        "glue:GetUserDefinedFunctions"
+                                    ],
+                                    "Resource": "*"
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "lakeformation:GetDataAccess",
+                                        "lakeformation:GrantPermissions",
+                                        "athena:*",
+                                        "glue:*"
+                                    ],
+                                    "Resource": "*"
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "dynamodb:*"
+                                    ],
+                                    "Resource": [
+                                        {
+                                            "Fn::Sub": "arn:aws:dynamodb:us-west-2:${AWS::AccountId}:table/DDBc360view"
+                                        }
+                                    ]
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "secretsmanager:ListSecrets"
+                                    ],
+                                    "Resource": "*"
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "secretsmanager:GetSecretValue",
+                                        "secretsmanager:GetResourcePolicy",
+                                        "secretsmanager:DescribeSecret",
+                                        "secretsmanager:ListSecretVersionIds"
+                                    ],
+                                    "Resource": [
+                                        {
+                                            "Ref": "RDSInstanceSecret"
+                                        }
+                                    ]
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "iam:GetRole",
+                                        "iam:PassRole"
+                                    ],
+                                    "Resource": "*"
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "s3:*"
+                                    ],
+                                    "Resource": [
+                                        {
+                                            "Fn::Join": [
+                                                "",
+                                                [
+                                                    "arn:aws:s3:::",
+                                                    {
+                                                        "Ref": "RawDataS3Bucket"
+                                                    },
+                                                    "*"
+                                                ]
+                                            ]
+                                        },
+                                        {
+                                            "Fn::Join": [
+                                                "",
+                                                [
+                                                    "arn:aws:s3:::",
+                                                    {
+                                                        "Ref": "StageDataS3Bucket"
+                                                    },
+                                                    "*"
+                                                ]
+                                            ]
+                                        },
+                                        {
+                                            "Fn::Join": [
+                                                "",
+                                                [
+                                                    "arn:aws:s3:::",
+                                                    {
+                                                        "Ref": "AnalyticsDataS3Bucket"
+                                                    },
+                                                    "*"
+                                                ]
+                                            ]
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        },
+        "LambdaIngestionPostgresql": {
+            "Type": "AWS::Lambda::Function",
+            "Properties": {
+                "Code": {
+                    "ZipFile": "import boto3\nimport os\n"
+                },
+                "Description": "This lambda simulates transactions to c360 source db",
+                "Role": {
+                    "Fn::GetAtt": [
+                        "GlueExecutionRole",
+                        "Arn"
+                    ]
+                },
+                "Environment": {
+                    "Variables": {
+                        "RDS_ENDPOINT": {
+                            "Fn::GetAtt": [
+                                "RDSSource",
+                                "Endpoint.Address"
+                            ]
+                        }
+                    }
+                },
+                "FunctionName": "c360viewIngestionPostgresql",
+                "Handler": "postgresql.lambda_handler",
+                "MemorySize": 256,
+                "Runtime": "python3.7",
+                "Timeout": 720,
+                "VpcConfig": {
+                    "SecurityGroupIds": [
+                        {
+                            "Fn::GetAtt": [
+                                "LambdaInstanceSecurityGroup",
+                                "GroupId"
+                            ]
+                        }
+                    ],
+                    "SubnetIds": [
+                        {
+                            "Ref": "SubnetAz1"
+                        },
+                        {
+                            "Ref": "SubnetAz2"
+                        }
+                    ]
+                }
+            }
+        },
+        "LambdaGetGaTables": {
+            "Type": "AWS::Lambda::Function",
+            "Properties": {
+                "Code": {
+                    "ZipFile": "import boto3\nimport os\n"
+                },
+                "Description": "This lambda simulates GA data",
+                "Role": {
+                    "Fn::GetAtt": [
+                        "GlueExecutionRole",
+                        "Arn"
+                    ]
+                },
+                "Environment": {
+                    "Variables": {
+                        "BucketName": {
+                            "Ref": "RawDataS3Bucket"
+                        },
+                        "SourceBucket": {
+                            "Ref": "Sourcebucket"
+                        },
+                        "csvDelimiter": ",",
+                        "region": "us-west-2"
+                    }
+                },
+                "FunctionName": "c360viewGetGaTables",
+                "Handler": "getgatables.lambda_handler",
+                "MemorySize": 256,
+                "Runtime": "python3.7",
+                "Timeout": 360
+            }
+        },
+        "LambdaMFgenAccount": {
+            "Type": "AWS::Lambda::Function",
+            "Properties": {
+                "Code": {
+                    "ZipFile": "import boto3\nimport os\n"
+                },
+                "Description": "This lambda simulates account data from mainframe",
+                "Role": {
+                    "Fn::GetAtt": [
+                        "GlueExecutionRole",
+                        "Arn"
+                    ]
+                },
+                "Environment": {
+                    "Variables": {
+                        "BucketName": {
+                            "Ref": "RawDataS3Bucket"
+                        },
+                        "csvDelimiter": ",",
+                        "region": "us-west-2"
+                    }
+                },
+                "FunctionName": "c360viewMFgenAccount",
+                "Handler": "account.lambda_handler",
+                "MemorySize": 256,
+                "Runtime": "python3.7",
+                "Timeout": 360,
+                "VpcConfig": {
+                    "SecurityGroupIds": [
+                        {
+                            "Fn::GetAtt": [
+                                "LambdaInstanceSecurityGroup",
+                                "GroupId"
+                            ]
+                        }
+                    ],
+                    "SubnetIds": [
+                        {
+                            "Ref": "SubnetAz1"
+                        },
+                        {
+                            "Ref": "SubnetAz2"
+                        }
+                    ]
+                }
+            }
+        },
+        "LambdaMFgenGBank": {
+            "Type": "AWS::Lambda::Function",
+            "Properties": {
+                "Code": {
+                    "ZipFile": "import boto3\nimport os\n"
+                },
+                "Description": "This lambda simulates general banking data from mainframe",
+                "Role": {
+                    "Fn::GetAtt": [
+                        "GlueExecutionRole",
+                        "Arn"
+                    ]
+                },
+                "Environment": {
+                    "Variables": {
+                        "BucketName": {
+                            "Ref": "RawDataS3Bucket"
+                        },
+                        "csvDelimiter": ",",
+                        "region": "us-west-2"
+                    }
+                },
+                "FunctionName": "c360viewMFgenGBank",
+                "Handler": "gbank.lambda_handler",
+                "MemorySize": 256,
+                "Runtime": "python3.7",
+                "Timeout": 360,
+                "VpcConfig": {
+                    "SecurityGroupIds": [
+                        {
+                            "Fn::GetAtt": [
+                                "LambdaInstanceSecurityGroup",
+                                "GroupId"
+                            ]
+                        }
+                    ],
+                    "SubnetIds": [
+                        {
+                            "Ref": "SubnetAz1"
+                        },
+                        {
+                            "Ref": "SubnetAz2"
+                        }
+                    ]
+                }
+            }
+        },
+        "LambdaMFgenCard": {
+            "Type": "AWS::Lambda::Function",
+            "Properties": {
+                "Code": {
+                    "ZipFile": "import boto3\nimport os\n"
+                },
+                "Description": "This lambda simulates card information extract to files",
+                "Role": {
+                    "Fn::GetAtt": [
+                        "GlueExecutionRole",
+                        "Arn"
+                    ]
+                },
+                "Environment": {
+                    "Variables": {
+                        "BucketName": {
+                            "Ref": "RawDataS3Bucket"
+                        },
+                        "csvDelimiter": ",",
+                        "region": "us-west-2"
+                    }
+                },
+                "FunctionName": "c360viewMFgenCard",
+                "Handler": "card.lambda_handler",
+                "MemorySize": 256,
+                "Runtime": "python3.7",
+                "Timeout": 360,
+                "VpcConfig": {
+                    "SecurityGroupIds": [
+                        {
+                            "Fn::GetAtt": [
+                                "LambdaInstanceSecurityGroup",
+                                "GroupId"
+                            ]
+                        }
+                    ],
+                    "SubnetIds": [
+                        {
+                            "Ref": "SubnetAz1"
+                        },
+                        {
+                            "Ref": "SubnetAz2"
+                        }
+                    ]
+                }
+            }
+        },
+        "LambdaCRMApi": {
+            "Type": "AWS::Lambda::Function",
+            "Properties": {
+                "Code": {
+                    "ZipFile": "import boto3\nimport os\n"
+                },
+                "Description": "This lambda simulates c360 CRM API",
+                "Role": {
+                    "Fn::GetAtt": [
+                        "GlueExecutionRole",
+                        "Arn"
+                    ]
+                },
+                "FunctionName": "c360viewCRMApi",
+                "Handler": "crmapi.lambda_handler",
+                "MemorySize": 256,
+                "Runtime": "python3.7",
+                "Timeout": 360
+            }
+        },
+        "LambdaGetCRMApi": {
+            "Type": "AWS::Lambda::Function",
+            "Properties": {
+                "Code": {
+                    "ZipFile": "import boto3\nimport os\n"
+                },
+                "Description": "This lambda calls c360 CRM API",
+                "Role": {
+                    "Fn::GetAtt": [
+                        "GlueExecutionRole",
+                        "Arn"
+                    ]
+                },
+                "Environment": {
+                    "Variables": {
+                        "BucketName": {
+                            "Ref": "RawDataS3Bucket"
+                        },
+                        "csvDelimiter": ",",
+                        "region": "us-west-2"
+                    }
+                },
+                "FunctionName": "c360viewGetCRMApi",
+                "Handler": "getapi.lambda_handler",
+                "MemorySize": 256,
+                "Runtime": "python3.7",
+                "Timeout": 360
+            }
+        },
+        "LambdaAthenaExecution": {
+            "Type": "AWS::Lambda::Function",
+            "Properties": {
+                "Code": {
+                    "ZipFile": "import boto3\nimport time\n\nparams = {\n}\n\nsession = boto3.Session()\nsessiondrop = boto3.Session()\ns3 = session.resource(\"s3\")\n\ndef athena_query(client, params):\n    response = client.start_query_execution(\n        QueryString=params[\"query\"],\n        QueryExecutionContext={\n            'Database': params['database']\n        },\n\t      ResultConfiguration={\n            'OutputLocation': 's3://' + params['bucket'] + '/' + params['path']\n        }\n    )\n    return response\n\n\ndef lambda_handler(event, context):\n    if 'query' in event:\n        #print(event)\n        params['database']=event['database']\n        params['bucket']=event['bucket']\n        params['path']=event['path']\n        params['query']=event['query']\n        if 'deletebucket' in event:\n            params['deletebucket']=event['deletebucket']\n            params['deletelocation']=event['deletelocation']\n        if 'drop' in event:\n            params['drop']=event['drop']\n        params['region']=event['region']\n    if 'drop' in params:\n        try:\n            clientdrop = session.client('athena', region_name=params[\"region\"])\n            response = clientdrop.start_query_execution(\n                QueryString=params[\"drop\"],\n                QueryExecutionContext={\n                    'Database': params['database']\n                },\n        \tResultConfiguration={\n                    'OutputLocation': 's3://' + params['bucket'] + '/' + params['path']\n                }\n            )\n            time.sleep(2)\n        except:\n            print('error on drop tables.')\n    if 'deletebucket' in params:\n        try:\n            deletebucket=params['deletebucket']\n            deletelocation=params['deletelocation']\n            bucket = s3.Bucket(deletebucket)\n            bucket.objects.filter(Prefix=deletelocation).delete()\n        except:\n            print('there was a problem trying to delete your path')\n    try:\n        client = session.client('athena', region_name=params[\"region\"])\n        response=athena_query(client, params)\n        resp=response\n        #print(resp)\n        resposta=response['QueryExecutionId']\n        print('finished your query: {} against: {} database in region {} the output is in {}/{}'.format(params['query'],params['database'],params['region'],params['bucket'],params['path']))\n        #print(resposta)\n        return(resposta)\n    except:\n        print('there was a problem executing your  query: {} against: {} database in region {} with output to {}/{}'.format(params['query'],params['database'],params['region'],params['bucket'],params['path']))\n"
+                },
+                "Description": "This lambda execute athena queries",
+                "Role": {
+                    "Fn::GetAtt": [
+                        "GlueExecutionRole",
+                        "Arn"
+                    ]
+                },
+                "FunctionName": "c360viewAthenaExecution",
+                "Handler": "index.lambda_handler",
+                "MemorySize": 256,
+                "Runtime": "python3.7",
+                "Timeout": 360
+            }
+        },
+        "LambdaCheckAthenaExecution": {
+            "Type": "AWS::Lambda::Function",
+            "Properties": {
+                "Code": {
+                    "ZipFile": "import boto3\nclient = boto3.client('athena')\n\ndef lambda_handler(event, context):\n    evento=str(event)\n    print('log {} '.format(evento))\n    try:\n            queryid=evento\n            print(queryid)\n            response = client.get_query_execution(\n                QueryExecutionId=queryid\n            )\n            resposta=response['QueryExecution']['Status']['State']\n            return(resposta)\n    except Exception as e:\n            print(e)\n            print('error on get response for query_id {}'.format(event['payload']))\n"
+                },
+                "Description": "This lambda check athena query completion",
+                "Role": {
+                    "Fn::GetAtt": [
+                        "GlueExecutionRole",
+                        "Arn"
+                    ]
+                },
+                "FunctionName": "c360viewCheckAthenaExecution",
+                "Handler": "index.lambda_handler",
+                "MemorySize": 256,
+                "Runtime": "python3.7",
+                "Timeout": 360
+            }
+        },
+        "LambdaCopyPythonLibraries": {
+            "Type": "AWS::Lambda::Function",
+            "Properties": {
+                "Code": {
+                    "ZipFile": "import boto3\nimport os\n\ns3 = boto3.client('s3')\ns3_resource = boto3.resource('s3')\n\nregion = os.getenv('region')\nBucketName = os.getenv('BucketName')\nSourceBucket = os.getenv('SourceBucket')\n\ndef lambda_handler(event, context):\n    #copy aws data wrangler\n    bucketname=SourceBucket\n    keys=['library/awswrangler-0.0.12-glue-none-any.whl',\n    'library/n1_c360_dispositions.py',\n    'library/cust360_etl_mf_trans.py',\n    'data/visitors/ga_visitors.csv',\n    'library/c360_analytics.py',\n    'library/c360dynamodbload.q'\n    ]\n    for key in keys:\n        copy_source = {\n            'Bucket': bucketname,\n            'Key': key\n                    }\n        bucket = s3_resource.Bucket(BucketName)\n        objs = list(bucket.objects.filter(Prefix=key))\n        if len(objs) > 0 and objs[0].key == key:\n            print(\"Exists!\")\n        else:\n            s3_resource.meta.client.copy(copy_source, BucketName, key)\n            print('copied.')\n    return('ok')\n"
+                },
+                "Description": "This lambda copies artifacts to s3",
+                "Role": {
+                    "Fn::GetAtt": [
+                        "GlueExecutionRole",
+                        "Arn"
+                    ]
+                },
+                "FunctionName": "c360viewCopyPythonLibraries",
+                "Handler": "index.lambda_handler",
+                "MemorySize": 256,
+                "Environment": {
+                    "Variables": {
+                        "BucketName": {
+                            "Ref": "StageDataS3Bucket"
+                        },
+                        "SourceBucket": {
+                            "Ref": "Sourcebucket"
+                        },
+                        "region": "us-west-2"
+                    }
+                },
+                "Runtime": "python3.7",
+                "Timeout": 360
+            }
+        },
+        "ScheduledCopyPythonLibraries": {
+            "Type": "AWS::Events::Rule",
+            "Properties": {
+                "Description": "ScheduledCopyPythonLibraries",
+                "ScheduleExpression": "rate(5 minutes)",
+                "State": "ENABLED",
+                "Targets": [
+                    {
+                        "Arn": {
+                            "Fn::Sub": "${LambdaCopyPythonLibraries.Arn}"
+                        },
+                        "Id": "LambdaCopy"
+                    }
+                ]
+            }
+        },
+        "LambdaInvokePermPython": {
+            "Type": "AWS::Lambda::Permission",
+            "Properties": {
+                "FunctionName": {
+                    "Fn::Sub": "${LambdaCopyPythonLibraries.Arn}"
+                },
+                "Action": "lambda:InvokeFunction",
+                "Principal": "events.amazonaws.com",
+                "SourceArn": {
+                    "Fn::Sub": "${ScheduledCopyPythonLibraries.Arn}"
+                }
+            }
+        },
+        "ScheduledIngestionPostgresql": {
+            "Type": "AWS::Events::Rule",
+            "Properties": {
+                "Description": "ScheduledRulePostgresql",
+                "ScheduleExpression": "rate(12 hours)",
+                "State": "DISABLED",
+                "Targets": [
+                    {
+                        "Arn": {
+                            "Fn::Sub": "${LambdaIngestionPostgresql.Arn}"
+                        },
+                        "Id": "Lambda111"
+                    }
+                ]
+            }
+        },
+        "LambdaInvokePermPostgresql": {
+            "Type": "AWS::Lambda::Permission",
+            "Properties": {
+                "FunctionName": {
+                    "Fn::Sub": "${LambdaIngestionPostgresql.Arn}"
+                },
+                "Action": "lambda:InvokeFunction",
+                "Principal": "events.amazonaws.com",
+                "SourceArn": {
+                    "Fn::Sub": "${ScheduledIngestionPostgresql.Arn}"
+                }
+            }
+        },
+        "ScheduledIngestionAccount": {
+            "Type": "AWS::Events::Rule",
+            "Properties": {
+                "Description": "ScheduledRuleAccount",
+                "ScheduleExpression": "rate(12 hours)",
+                "State": "DISABLED",
+                "Targets": [
+                    {
+                        "Arn": {
+                            "Fn::Sub": "${LambdaMFgenAccount.Arn}"
+                        },
+                        "Id": "LambdaAccount"
+                    }
+                ]
+            }
+        },
+        "LambdaInvokePermAccount": {
+            "Type": "AWS::Lambda::Permission",
+            "Properties": {
+                "FunctionName": {
+                    "Fn::Sub": "${LambdaMFgenAccount.Arn}"
+                },
+                "Action": "lambda:InvokeFunction",
+                "Principal": "events.amazonaws.com",
+                "SourceArn": {
+                    "Fn::Sub": "${ScheduledIngestionAccount.Arn}"
+                }
+            }
+        },
+        "ScheduledIngestionBank": {
+            "Type": "AWS::Events::Rule",
+            "Properties": {
+                "Description": "ScheduledRuleBank",
+                "ScheduleExpression": "rate(12 hours)",
+                "State": "DISABLED",
+                "Targets": [
+                    {
+                        "Arn": {
+                            "Fn::Sub": "${LambdaMFgenGBank.Arn}"
+                        },
+                        "Id": "LambdaBank"
+                    }
+                ]
+            }
+        },
+        "LambdaInvokePermBank": {
+            "Type": "AWS::Lambda::Permission",
+            "Properties": {
+                "FunctionName": {
+                    "Fn::Sub": "${LambdaMFgenGBank.Arn}"
+                },
+                "Action": "lambda:InvokeFunction",
+                "Principal": "events.amazonaws.com",
+                "SourceArn": {
+                    "Fn::Sub": "${ScheduledIngestionBank.Arn}"
+                }
+            }
+        },
+        "ScheduledIngestionGetCRMApi": {
+            "Type": "AWS::Events::Rule",
+            "Properties": {
+                "Description": "ScheduledRuleCRMApi",
+                "ScheduleExpression": "rate(12 hours)",
+                "State": "DISABLED",
+                "Targets": [
+                    {
+                        "Arn": {
+                            "Fn::Sub": "${LambdaGetCRMApi.Arn}"
+                        },
+                        "Id": "LambdaBank"
+                    }
+                ]
+            }
+        },
+        "LambdaInvokePermCRMApi": {
+            "Type": "AWS::Lambda::Permission",
+            "Properties": {
+                "FunctionName": {
+                    "Fn::Sub": "${LambdaGetCRMApi.Arn}"
+                },
+                "Action": "lambda:InvokeFunction",
+                "Principal": "events.amazonaws.com",
+                "SourceArn": {
+                    "Fn::Sub": "${ScheduledIngestionGetCRMApi.Arn}"
+                }
+            }
+        },
+        "ScheduledIngestionCard": {
+            "Type": "AWS::Events::Rule",
+            "Properties": {
+                "Description": "ScheduledRuleCard",
+                "ScheduleExpression": "rate(12 hours)",
+                "State": "DISABLED",
+                "Targets": [
+                    {
+                        "Arn": {
+                            "Fn::Sub": "${LambdaMFgenCard.Arn}"
+                        },
+                        "Id": "LambdaBank"
+                    }
+                ]
+            }
+        },
+        "LambdaInvokePermCard": {
+            "Type": "AWS::Lambda::Permission",
+            "Properties": {
+                "FunctionName": {
+                    "Fn::Sub": "${LambdaMFgenCard.Arn}"
+                },
+                "Action": "lambda:InvokeFunction",
+                "Principal": "events.amazonaws.com",
+                "SourceArn": {
+                    "Fn::Sub": "${ScheduledIngestionCard.Arn}"
+                }
+            }
+        },
+        "ScheduledGetGATables": {
+            "Type": "AWS::Events::Rule",
+            "Properties": {
+                "Description": "ScheduledRuleCard",
+                "ScheduleExpression": "rate(12 hours)",
+                "State": "DISABLED",
+                "Targets": [
+                    {
+                        "Arn": {
+                            "Fn::Sub": "${LambdaGetGaTables.Arn}"
+                        },
+                        "Id": "LambdaGaTables"
+                    }
+                ]
+            }
+        },
+        "LambdaInvokeGetGATables": {
+            "Type": "AWS::Lambda::Permission",
+            "Properties": {
+                "FunctionName": {
+                    "Fn::Sub": "${LambdaGetGaTables.Arn}"
+                },
+                "Action": "lambda:InvokeFunction",
+                "Principal": "events.amazonaws.com",
+                "SourceArn": {
+                    "Fn::Sub": "${ScheduledGetGATables.Arn}"
+                }
+            }
+        },
+        "cluster": {
+            "Type": "AWS::EMR::Cluster",
+            "Properties": {
+                "Applications": [
+                    {
+                        "Name": "Hadoop"
+                    },
+                    {
+                        "Name": "Hive"
+                    },
+                    {
+                        "Name": "Spark"
+                    }
+                ],
+                "EbsRootVolumeSize": 100,
+                "Configurations": [
+                    {
+                        "Classification": "hive-site",
+                        "ConfigurationProperties": {
+                            "hive.metastore.client.factory.class": "com.amazonaws.glue.catalog.metastore.AWSGlueDataCatalogHiveClientFactory"
+                        }
+                    },
+                    {
+                        "Classification": "spark-hive-site",
+                        "ConfigurationProperties": {
+                            "hive.metastore.client.factory.class": "com.amazonaws.glue.catalog.metastore.AWSGlueDataCatalogHiveClientFactory"
+                        }
+                    }
+                ],
+                "Instances": {
+                    "Ec2SubnetId": {
+                        "Ref": "SubnetAz1"
+                    },
+                    "Ec2KeyName": {
+                        "Ref": "InstanceKeyPairParameter"
+                    },
+                    "MasterInstanceGroup": {
+                        "InstanceCount": 1,
+                        "InstanceType": "m5.xlarge",
+                        "Market": "ON_DEMAND",
+                        "Name": "c360master"
+                    },
+                    "CoreInstanceGroup": {
+                        "InstanceCount": 2,
+                        "InstanceType": "m5.xlarge",
+                        "Market": "ON_DEMAND",
+                        "Name": "c360core"
+                    }
+                },
+                "Name": "c360cluster",
+                "JobFlowRole": {
+                    "Ref": "emrEc2InstanceProfile"
+                },
+                "ServiceRole": {
+                    "Ref": "emrRole"
+                },
+                "ReleaseLabel": "emr-5.28.0",
+                "VisibleToAllUsers": true
+            }
+        },
+        "emrRole": {
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "AssumeRolePolicyDocument": {
+                    "Version": "2008-10-17",
+                    "Statement": [
+                        {
+                            "Sid": "",
+                            "Effect": "Allow",
+                            "Principal": {
+                                "Service": "elasticmapreduce.amazonaws.com"
+                            },
+                            "Action": "sts:AssumeRole"
+                        }
+                    ]
+                },
+                "Path": "/",
+                "ManagedPolicyArns": [
+                    "arn:aws:iam::aws:policy/service-role/AmazonElasticMapReduceRole"
+                ]
+            }
+        },
+        "emrEc2InstanceProfile": {
+            "Type": "AWS::IAM::InstanceProfile",
+            "Properties": {
+                "Path": "/",
+                "Roles": [
+                    {
+                        "Ref": "GlueExecutionRole"
+                    }
+                ]
+            }
+        },
+        "StatesExecutionRole": {
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "AssumeRolePolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Principal": {
+                                "Service": [
+                                    {
+                                        "Fn::Sub": "states.${AWS::Region}.amazonaws.com"
+                                    }
+                                ]
+                            },
+                            "Action": "sts:AssumeRole"
+                        }
+                    ]
+                },
+                "Path": "/",
+                "Policies": [
+                    {
+                        "PolicyName": "c360vStatesExecutionPolicy",
+                        "PolicyDocument": {
+                            "Version": "2012-10-17",
+                            "Statement": [
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "lambda:InvokeFunction"
+                                    ],
+                                    "Resource": "*"
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        },
+        "MyStateMachineGA": {
+            "Type": "AWS::StepFunctions::StateMachine",
+            "Properties": {
+                "DefinitionString": {
+                    "Fn::Sub": "{\n  \"Comment\": \"Step Functions integration with Athena through Lambda Functions.\",\n  \"StartAt\": \"CreateDatabase\",\n  \"States\": {\n    \"CreateDatabase\": {\n    \"Type\": \"Task\",\n    \"Resource\": \"arn:aws:states:::lambda:invoke\",\n    \"Parameters\": {\n    \"FunctionName\": \"${LambdaAthenaExecution.Arn}\",\n    \"Payload\": {\n      \"region\": \"us-west-2\",\n      \"database\": \"c360view_stage\",\n      \"bucket\": \"c360view-${AWS::Region}-${AWS::AccountId}-stage\",\n      \"path\": \"athena_query_exec/regularoutput\",\n      \"query\": \"CREATE DATABASE IF NOT EXISTS c360view_stage\"\n                     }\n  },\n      \"ResultPath\": \"$.taskresult\",\n      \"Next\": \"finishcreatedb\"\n  },\n  \"finishcreatedb\": {\n        \"Type\": \"Wait\",\n        \"Seconds\": 1,\n        \"Next\": \"GA_unnest_1\"\n  },\n\n\n\n  \"GA_unnest_1\": {\n            \"Type\": \"Task\",\n            \"Resource\": \"arn:aws:states:::lambda:invoke\",\n            \"Parameters\": {\n            \"FunctionName\": \"${LambdaAthenaExecution.Arn}\",\n            \"Payload\": {\n              \"region\": \"us-west-2\",\n              \"database\": \"c360view_stage\",\n              \"bucket\": \"c360view-${AWS::Region}-${AWS::AccountId}-stage\",\n              \"path\": \"athena_query_exec/regularoutput\",\n              \"deletebucket\": \"c360view-${AWS::Region}-${AWS::AccountId}-stage\",\n              \"deletelocation\": \"ga/ga_sessions_unnest_hits_avro_stg\",\n              \"drop\": \"DROP TABLE c360view_stage.ga_sessions_unnest_hits_avro_stg\",\n              \"query\": \"CREATE TABLE c360view_stage.ga_sessions_unnest_hits_avro_stg  WITH (    format='AVRO',    external_location='s3://c360view-${AWS::Region}-${AWS::AccountId}-stage/ga/ga_sessions_unnest_hits_avro_stg/',    partitioned_by=ARRAY['day']  ) AS  SELECT      visitorid ,      visitnumber ,      visitid ,      visitstarttime ,      date visitdate,      totals.visits as t_visits,      totals.hits as t_hits,      totals.pageviews as t_pageviews,      totals.timeonsite as t_timeonsite,      totals.bounces as t_bounces,      totals.transactions as t_transactions,      totals.transactionrevenue as t_transactionrevenue,      totals.newvisits as t_newvisits,      totals.screenviews as t_screenviews,      totals.uniquescreenviews as t_uniquescreenviews,      totals.timeonscreen as t_timeonscreen,      totals.totaltransactionrevenue as t_totaltransactionrevenue,      totals.sessionqualitydim as t_sessionqualitydim,      trafficsource.referralpath as trafficsource_referralpath,      trafficsource.campaign as trafficsource_campaign,      trafficsource.source as trafficsource_source,      trafficsource.medium as trafficsource_medium,      trafficsource.keyword as trafficsource_keyword,      trafficsource.adcontent as trafficsource_adcontent,      trafficsource.adwordsclickinfo as trafficsource_adwordsclickinfo,      trafficsource.istruedirect as trafficsource_istruedirect,      trafficsource.campaigncode as trafficsource_campaigncode,      device.browser as device_browser,      device.operatingsystem as device_operatingsystem,      device.ismobile as device_ismobile,      device.devicecategory as device_devicecategory,      geonetwork.subcontinent as geonetwork_subcontinent,      geonetwork.country as geonetwork_country,      geonetwork.region as geonetwork_region,      geonetwork.metro as geonetwork_metro,      geonetwork.city as geonetwork_city,      geonetwork.networkdomain as geonetwork_networkdomain,      customdimensions,      hit.hitnumber as hit_hitnumber,      hit.time as hit_time,      hit.hour as hit_hour,      hit.minute as hit_minute,      hit.issecure as hit_issecure,      hit.isinteraction as hit_isinteraction,      hit.isentrance as hit_isentrance,      hit.isexit as hit_isexit,      hit.referer as hit_referer,      hit.page as hit_page,      hit.transaction as hit_transaction,      hit.item as hit_item,      hit.contentinfo as hit_contentinfo,      hit.appinfo as hit_appinfo,      hit.exceptioninfo as hit_exceptioninfo,      hit.eventinfo as hit_eventinfo,      hit.product as hit_product,      hit.promotion as hit_promotion,      hit.promotionactioninfo as hit_promotionactioninfo,      hit.refund as hit_refund,      hit.ecommerceaction as hit_ecommerceaction,      hit.experiment as hit_experiment,      hit.publisher as hit_publisher,      hit.customvariables as hit_customvariables,      hit.customdimensions as hit_customdimensions,      hit.custommetrics as hit_custommetrics,      hit.type as hit_socialengagementtype,      hit.social as hit_social,      hit.latencytracking as hit_latencytracking,      hit.sourcepropertyinfo as hit_sourcepropertyinfo,      hit.contentgroup as hit_contentgroup,      hit.datasource as hit_datasource,      hit.publisher_infos as hit_publisher_infos,      fullvisitorid ,      userid ,      clientid ,      channelgrouping ,      socialengagementtype,      date day  FROM c360view_raw.data  CROSS JOIN UNNEST (hits) AS h (hit);\"\n            }\n          },\n              \"ResultPath\": \"$.taskresultunnest1\",\n              \"Next\": \"QueryResultunnest1\"\n          },\n          \"QueryResultunnest1\": {\n            \"Type\": \"Task\",\n            \"Resource\": \"${LambdaCheckAthenaExecution.Arn}\",\n            \"InputPath\" :\"$.taskresultunnest1.Payload\",\n            \"ResultPath\":\"$.queryexecunnest1\",\n            \"Next\": \"IsQueryFinishedunnest1\"\n          },\n  \"IsQueryFinishedunnest1\": {\n        \"Type\": \"Choice\",\n        \"Choices\": [\n            {\n                \"Variable\": \"$.queryexecunnest1\",\n                \"StringEquals\": \"RUNNING\",\n                \"Next\": \"wait_one_secondunnest1\"\n            },\n            {\n                \"Variable\": \"$.queryexecunnest1\",\n                \"StringEquals\": \"QUEUED\",\n                \"Next\": \"wait_3_secondunnest1\"\n            }\n        ],\n        \"Default\": \"GA_unnest_2\"\n    },\n\"wait_3_secondunnest1\": {\n    \"Type\": \"Wait\",\n    \"Seconds\": 3,\n    \"Next\": \"QueryResultunnest1\"\n},\n\"wait_one_secondunnest1\": {\n    \"Type\": \"Wait\",\n    \"Seconds\": 1,\n    \"Next\": \"QueryResultunnest1\"\n},\n\"GA_unnest_2\": {\n                  \"Type\": \"Task\",\n                  \"Resource\": \"arn:aws:states:::lambda:invoke\",\n                  \"Parameters\": {\n                  \"FunctionName\": \"${LambdaAthenaExecution.Arn}\",\n                  \"Payload\": {\n                    \"region\": \"us-west-2\",\n                    \"database\": \"c360view_stage\",\n                    \"bucket\": \"c360view-${AWS::Region}-${AWS::AccountId}-stage\",\n                    \"path\": \"athena_query_exec/regularoutput\",\n                    \"deletebucket\": \"c360view-${AWS::Region}-${AWS::AccountId}-stage\",\n                    \"deletelocation\": \"ga/ga_sessions_split_avro_stg\",\n                    \"drop\": \"DROP TABLE c360view_stage.ga_sessions_split_avro_stg\",\n                    \"query\": \"CREATE TABLE c360view_stage.ga_sessions_split_avro_stg  WITH (    format='AVRO',    external_location='s3://c360view-${AWS::Region}-${AWS::AccountId}-stage/ga/ga_sessions_split_avro_stg/',    partitioned_by=ARRAY['day']  ) AS  SELECT  visitorid  ,  visitnumber  ,  visitid  ,  visitstarttime  ,  visitdate  ,  t_visits  ,  t_hits  ,  t_pageviews  ,  t_timeonsite  ,  t_bounces  ,  t_transactions  ,  t_transactionrevenue  ,  t_newvisits  ,  t_screenviews  ,  t_uniquescreenviews  ,  t_timeonscreen  ,  t_totaltransactionrevenue  ,  t_sessionqualitydim  ,  trafficsource_referralpath  ,  trafficsource_campaign  ,  trafficsource_source  ,  trafficsource_medium  ,  trafficsource_keyword  ,  trafficsource_adcontent  ,  trafficsource_adwordsclickinfo.campaignid as adwords_campaignid,  trafficsource_adwordsclickinfo.adgroupid as adwords_adgroupid,  trafficsource_adwordsclickinfo.creativeid as adwords_creativeid,  trafficsource_adwordsclickinfo.criteriaid as adwords_criteriaid,  trafficsource_adwordsclickinfo.page as adwords_page,  trafficsource_adwordsclickinfo.slot as adwords_slot,  trafficsource_adwordsclickinfo.criteriaparameters as adwords_criteriaparameters,  trafficsource_adwordsclickinfo.gclid as adwords_gclid,  trafficsource_adwordsclickinfo.customerid as adwords_customerid,  trafficsource_adwordsclickinfo.adnetworktype as adwords_adnetworktype,  trafficsource_adwordsclickinfo.targetingcriteria as adwords_targetingcriteria,  trafficsource_adwordsclickinfo.isvideoad as adwords_isvideoad,  trafficsource_istruedirect  ,  trafficsource_campaigncode  ,  device_browser  ,  device_operatingsystem  ,  device_ismobile  ,  device_devicecategory  ,  geonetwork_subcontinent  ,  geonetwork_country  ,  geonetwork_region  ,  geonetwork_metro  ,  geonetwork_city  ,  geonetwork_networkdomain  ,  customdimensions,  hit_hitnumber  ,  hit_time  ,  hit_hour  ,  hit_minute  ,  hit_issecure  ,  hit_isinteraction  ,  hit_isentrance  ,  hit_isexit  ,  hit_referer  ,  hit_page.pagepath as hitpage_pagepath,  hit_page.hostname as hitpage_hostname,  hit_page.pagetitle as hitpage_pagetitle,  hit_page.searchkeyword as hitpage_searchkeyword,  hit_page.searchcategory as hitpage_searchcategory,  hit_page.pagepathlevel1 as hitpage_pagepathlevel1,  hit_page.pagepathlevel2 as hitpage_pagepathlevel2,  hit_page.pagepathlevel3 as hitpage_pagepathlevel3,  hit_page.pagepathlevel4 as hitpage_pagepathlevel4,  hit_transaction,  hit_item.transactionid as hit_item_transactionid,  hit_item.productname as hit_item_productname,  hit_item.productcategory as hit_item_productcategory,  hit_item.productsku as hit_item_productsku,  hit_item.itemquantity as hit_item_itemquantity,  hit_item.itemrevenue as hit_item_itemrevenue,  hit_item.currencycode as hit_item_currencycode,  hit_item.localitemrevenue hit_item_localitemrevenue,  hit_contentinfo  ,  hit_appinfo ,  hit_exceptioninfo,  hit_eventinfo,  hit_product,  hit_promotion,  hit_promotionactioninfo  ,  hit_refund  ,  hit_ecommerceaction,  hit_experiment,  hit_publisher  ,  hit_customvariables,  hit_customdimensions,  hit_custommetrics,  hit_socialengagementtype  ,  hit_social,  hit_latencytracking,  hit_sourcepropertyinfo,  hit_contentgroup,  hit_datasource  ,  hit_publisher_infos,  fullvisitorid  ,  userid  ,  clientid  ,  channelgrouping  ,  socialengagementtype,  day  FROM c360view_stage.ga_sessions_unnest_hits_avro_stg;\"\n                  }\n                },\n                    \"ResultPath\": \"$.taskresultunnest2\",\n                    \"Next\": \"QueryResultunnest2\"\n                },\n\"QueryResultunnest2\": {\n                  \"Type\": \"Task\",\n                  \"Resource\": \"${LambdaCheckAthenaExecution.Arn}\",\n                  \"InputPath\" :\"$.taskresultunnest2.Payload\",\n                  \"ResultPath\":\"$.queryexecunnest2\",\n                  \"Next\": \"IsQueryFinishedunnest2\"\n                },\n\"IsQueryFinishedunnest2\": {\n                          \"Type\": \"Choice\",\n                          \"Choices\": [\n                              {\n                                  \"Variable\": \"$.queryexecunnest2\",\n                                  \"StringEquals\": \"RUNNING\",\n                                  \"Next\": \"wait_one_secondunnest2\"\n                              },\n                              {\n                                  \"Variable\": \"$.queryexecunnest2\",\n                                  \"StringEquals\": \"QUEUED\",\n                                  \"Next\": \"wait_3_secondunnest2\"\n                              }\n                          ],\n                          \"Default\": \"CreateDatabase2\"\n                      },\n                  \"wait_3_secondunnest2\": {\n                      \"Type\": \"Wait\",\n                      \"Seconds\": 3,\n                      \"Next\": \"QueryResultunnest2\"\n                  },\n                 \"wait_one_secondunnest2\": {\n                      \"Type\": \"Wait\",\n                      \"Seconds\": 1,\n                      \"Next\": \"QueryResultunnest2\"\n                  },\n\"CreateDatabase2\": {\n                  \"Type\": \"Task\",\n                  \"Resource\": \"arn:aws:states:::lambda:invoke\",\n                  \"Parameters\": {\n                  \"FunctionName\": \"${LambdaAthenaExecution.Arn}\",\n                  \"Payload\": {\n                    \"region\": \"us-west-2\",\n                    \"database\": \"c360view_analytics\",\n                    \"bucket\": \"c360view-${AWS::Region}-${AWS::AccountId}-analytics\",\n                    \"path\": \"athena_query_exec/regularoutput\",\n                    \"deletebucket\": \"c360view-${AWS::Region}-${AWS::AccountId}-stage\",\n                    \"deletelocation\": \"ga/none/none\",\n                    \"drop\": \"SELECT 1;\",\n                    \"query\": \"CREATE DATABASE IF NOT EXISTS c360view_analytics\"\n                                   }\n                },\n                    \"ResultPath\": \"$.taskresultdb2\",\n                    \"Next\": \"finishcreatedb2\"\n                },\n                \"finishcreatedb2\": {\n                      \"Type\": \"Wait\",\n                      \"Seconds\": 3,\n                      \"Next\": \"GA_unnest_3\"\n                },\n\"GA_unnest_3\": {\n                  \"Type\": \"Task\",\n                  \"Resource\": \"arn:aws:states:::lambda:invoke\",\n                  \"Parameters\": {\n                  \"FunctionName\": \"${LambdaAthenaExecution.Arn}\",\n                  \"Payload\": {\n                    \"region\": \"us-west-2\",\n                    \"database\": \"c360view_analytics\",\n                    \"bucket\": \"c360view-${AWS::Region}-${AWS::AccountId}-analytics\",\n                    \"path\": \"athena_query_exec/regularoutput\",\n                    \"deletebucket\": \"c360view-${AWS::Region}-${AWS::AccountId}-analytics\",\n                    \"deletelocation\": \"ga/ga_sessions_analytics\",\n                    \"drop\": \"DROP TABLE c360view_analytics.ga_sessions_analytics\",\n                    \"query\": \"CREATE TABLE c360view_analytics.ga_sessions_analytics  WITH (    format='PARQUET',    external_location='s3://c360view-${AWS::Region}-${AWS::AccountId}-analytics/ga/ga_sessions_analytics/',    partitioned_by=ARRAY['day']  ) AS  SELECT  v.col1 as client_id, visitorid  ,  visitnumber  ,  visitid  ,  visitstarttime  ,  visitdate  ,  t_visits  ,  t_hits  ,  t_pageviews  ,  t_timeonsite  ,  t_bounces  ,  t_transactions  ,  t_transactionrevenue  ,  t_newvisits  ,  t_screenviews  ,  t_uniquescreenviews  ,  t_timeonscreen  ,  t_totaltransactionrevenue  ,  t_sessionqualitydim  ,  trafficsource_referralpath  ,  trafficsource_campaign  ,  trafficsource_source  ,  trafficsource_medium  ,  trafficsource_keyword  ,  trafficsource_adcontent  ,  adwords_campaignid ,  adwords_adgroupid ,  adwords_creativeid ,  adwords_criteriaid ,  adwords_page ,  adwords_slot ,  adwords_criteriaparameters ,  adwords_gclid ,  adwords_customerid ,  adwords_adnetworktype ,  adwords_targetingcriteria ,  adwords_isvideoad ,  trafficsource_istruedirect  ,  trafficsource_campaigncode ,  device_browser  ,  device_operatingsystem  ,  device_ismobile  ,  device_devicecategory  ,  geonetwork_subcontinent  ,  geonetwork_country  ,  geonetwork_region  ,  geonetwork_metro  ,  geonetwork_city  ,  geonetwork_networkdomain  ,  hit_hitnumber  ,  hit_time  ,  hit_hour  ,  hit_minute  ,  hit_issecure ,  hit_isinteraction  ,  hit_isentrance  ,  hit_isexit  ,  hit_referer ,  hitpage_pagepath ,  hitpage_hostname ,  hitpage_pagetitle ,  hitpage_searchkeyword ,  hitpage_searchcategory ,  replace(replace(hitpage_pagepathlevel1,'+'),'/') as hitpage_pagepathlevel1,  replace(replace(hitpage_pagepathlevel2,'+'),'/') as hitpage_pagepathlevel2 ,  replace(replace(hitpage_pagepathlevel3,'+'),'/') as hitpage_pagepathlevel3 ,  replace(replace(hitpage_pagepathlevel4,'+'),'/') as hitpage_pagepathlevel4 ,  hit_contentinfo ,  hit_appinfo.screenname as hit_appinfo_screenname,  hit_appinfo.landingscreenname as hit_appinfo_landingscreenname,  hit_appinfo.exitscreenname as hit_appinfo_exitscreenname,  hit_appinfo.screendepth as hit_appinfo_screendepth,  hit_promotionactioninfo ,  hit_refund ,  hit_publisher ,  hit_datasource ,  fullvisitorid ,  userid ,  clientid ,  channelgrouping ,  socialengagementtype ,  day  from c360view_stage.ga_sessions_split_avro_stg as ga left outer join c360view_stage.visitors as v on ga.fullvisitorid = cast(v.col0 as VARCHAR);\"\n                  }\n                },\n                    \"Next\": \"Done\"\n                },\n\n\"Done\": {\n            \"Type\": \"Pass\",\n            \"End\": true\n}\n\n\n}\n}\n"
+                },
+                "RoleArn": {
+                    "Fn::GetAtt": [
+                        "StatesExecutionRole",
+                        "Arn"
+                    ]
+                }
+            }
+        },
+        "MyStateMachineToParquet": {
+            "Type": "AWS::StepFunctions::StateMachine",
+            "Properties": {
+                "RoleArn": {
+                    "Fn::GetAtt": [
+                        "StatesExecutionRole",
+                        "Arn"
+                    ]
+                },
+                "DefinitionString": {
+                    "Fn::Sub": "{\n  \"Comment\": \"Step Functions integration with Athena through Lambda Functions.\",\n  \"StartAt\": \"CreateDatabase\",\n  \"States\": {\n    \"CreateDatabase\": {\n    \"Type\": \"Task\",\n    \"Resource\": \"arn:aws:states:::lambda:invoke\",\n    \"Parameters\": {\n    \"FunctionName\": \"${LambdaAthenaExecution.Arn}\",\n    \"Payload\": {\n      \"region\": \"us-west-2\",\n      \"database\": \"c360view_stage\",\n      \"bucket\": \"c360view-${AWS::Region}-${AWS::AccountId}-stage\",\n      \"path\": \"athena_query_exec/regularoutput\",\n      \"drop\":\"SELECT 1;\",\n      \"deletebucket\": \"c360view-${AWS::Region}-${AWS::AccountId}-stage\",\n      \"deletelocation\": \"ga/none/none\",\n      \"query\": \"CREATE DATABASE IF NOT EXISTS c360view_stage;\"\n\n                     }\n                   },\n      \"ResultPath\": \"$.taskresult\",\n      \"Next\": \"finishcreatedb\"\n    },\n    \"finishcreatedb\": {\n        \"Type\": \"Wait\",\n        \"Seconds\": 1,\n        \"Next\": \"Done\"\n      },\n    \"Done\": {\n            \"Type\": \"Pass\",\n            \"Next\": \"TransformData\"\n        },\n\n\n\n\n    \"TransformData\": {\n      \"Type\": \"Parallel\",\n      \"Next\": \"TransactionSTG\",\n      \"ResultPath\": \"$.TransformData\",\n      \"Branches\": [\n        { \"StartAt\": \"TransformTableCustomer\",\n        \"States\": {\n            \"TransformTableCustomer\": {\n              \"Type\": \"Task\",\n              \"Resource\": \"arn:aws:states:::lambda:invoke\",\n              \"Parameters\": {\n              \"FunctionName\": \"${LambdaAthenaExecution.Arn}\",\n              \"Payload\": {\n                \"region\": \"us-west-2\",\n                \"database\": \"c360view_stage\",\n                \"bucket\": \"c360view-${AWS::Region}-${AWS::AccountId}-stage\",\n                \"path\": \"athena_query_exec/regularoutput\",\n                \"deletebucket\": \"c360view-${AWS::Region}-${AWS::AccountId}-stage\",\n                \"deletelocation\": \"crm/customer_pqt\",\n                \"drop\": \"DROP TABLE c360view_stage.customer_pqt\",\n                \"query\": \"CREATE TABLE c360view_stage.customer_pqt  WITH ( external_location = 's3://c360view-${AWS::Region}-${AWS::AccountId}-stage/crm/customer_pqt/', format = 'PARQUET' ) AS  WITH ranked_messages AS       (SELECT c.*,           ROW_NUMBER()          OVER ( PARTITION BY client_id) AS rn      FROM c360view_raw.crm AS c )  SELECT *,           CAST(birth_date AS date) AS b_date  FROM ranked_messages  WHERE rn = 1  ORDER BY  client_id;   \"\n                               }\n                             },\n                \"ResultPath\": \"$.taskresultcustomer\",\n                \"Next\": \"QueryResultcustomer\"\n              },\n            \"QueryResultcustomer\": {\n                \"Type\": \"Task\",\n                \"Resource\": \"${LambdaCheckAthenaExecution.Arn}\",\n                \"InputPath\" :\"$.taskresultcustomer.Payload\",\n                \"ResultPath\":\"$.queryexeccustomer\",\n                \"Next\": \"IsQueryFinishedcustomer\"\n              },\n            \"IsQueryFinishedcustomer\": {\n              \"Type\": \"Choice\",\n                  \"Choices\": [\n                      {\n                          \"Variable\": \"$.queryexeccustomer\",\n                          \"StringEquals\": \"RUNNING\",\n                          \"Next\": \"wait_one_secondcustomer\"\n                      },\n                      {\n                          \"Variable\": \"$.queryexeccustomer\",\n                          \"StringEquals\": \"QUEUED\",\n                          \"Next\": \"wait_3_secondcustomer\"\n                      }\n                  ],\n                  \"Default\": \"Donecustomer\"\n                  },\n            \"wait_3_secondcustomer\": {\n                \"Type\": \"Wait\",\n                \"Seconds\": 3,\n                \"Next\": \"QueryResultcustomer\"\n                },\n            \"wait_one_secondcustomer\": {\n                \"Type\": \"Wait\",\n                \"Seconds\": 1,\n                \"Next\": \"QueryResultcustomer\"\n                },\n            \"Donecustomer\": {\n                            \"Type\": \"Pass\",\n                            \"End\": true\n                }\n                }\n\n        },\n        { \"StartAt\": \"TransformTableAccount\",\n        \"States\": {\n            \"TransformTableAccount\": {\n              \"Type\": \"Task\",\n              \"Resource\": \"arn:aws:states:::lambda:invoke\",\n              \"Parameters\": {\n              \"FunctionName\": \"${LambdaAthenaExecution.Arn}\",\n              \"Payload\": {\n                \"region\": \"us-west-2\",\n                \"database\": \"c360view_stage\",\n                \"bucket\": \"c360view-${AWS::Region}-${AWS::AccountId}-stage\",\n                \"path\": \"athena_query_exec/regularoutput\",\n                \"deletebucket\": \"c360view-${AWS::Region}-${AWS::AccountId}-stage\",\n                \"deletelocation\": \"origination/account_pqt\",\n                \"drop\": \"DROP TABLE c360view_stage.account_pqt\",\n                \"query\": \"CREATE TABLE c360view_stage.account_pqt  WITH (        external_location = 's3://c360view-${AWS::Region}-${AWS::AccountId}-stage/origination/account_pqt/',        format = 'PARQUET'  )  AS  WITH ranked_messages AS (    SELECT col0 as account_id, col1 as branch_id, col2 as frequency, col3 as creation_date, ROW_NUMBER() OVER ( PARTITION BY col0) AS rn    FROM c360view_raw.account AS a  )  SELECT *, date_parse(creation_date,'%Y-%m-%dT%H:%i:%s.%f') AS cr_date FROM ranked_messages WHERE rn = 1 ORDER BY account_id ;     \"\n                               }\n                             },\n                \"ResultPath\": \"$.taskresultaccount\",\n                \"Next\": \"QueryResultaccount\"\n              },\n            \"QueryResultaccount\": {\n                \"Type\": \"Task\",\n                \"Resource\": \"${LambdaCheckAthenaExecution.Arn}\",\n                \"InputPath\" :\"$.taskresultaccount.Payload\",\n                \"ResultPath\":\"$.queryexecaccount\",\n                \"Next\": \"IsQueryFinishedaccount\"\n              },\n            \"IsQueryFinishedaccount\": {\n              \"Type\": \"Choice\",\n                  \"Choices\": [\n                      {\n                          \"Variable\": \"$.queryexecaccount\",\n                          \"StringEquals\": \"RUNNING\",\n                          \"Next\": \"wait_one_secondaccount\"\n                      },\n                      {\n                          \"Variable\": \"$.queryexecaccount\",\n                          \"StringEquals\": \"QUEUED\",\n                          \"Next\": \"wait_3_secondaccount\"\n                      }\n                  ],\n                  \"Default\": \"Doneaccount\"\n                  },\n            \"wait_3_secondaccount\": {\n                \"Type\": \"Wait\",\n                \"Seconds\": 3,\n                \"Next\": \"QueryResultaccount\"\n                },\n            \"wait_one_secondaccount\": {\n                \"Type\": \"Wait\",\n                \"Seconds\": 1,\n                \"Next\": \"QueryResultaccount\"\n                },\n            \"Doneaccount\": {\n                                \"Type\": \"Pass\",\n                                \"End\": true\n                    }\n                }\n\n        },\n        { \"StartAt\": \"TransformTableCard\",\n        \"States\": {\n            \"TransformTableCard\": {\n              \"Type\": \"Task\",\n              \"Resource\": \"arn:aws:states:::lambda:invoke\",\n              \"Parameters\": {\n              \"FunctionName\": \"${LambdaAthenaExecution.Arn}\",\n              \"Payload\": {\n                \"region\": \"us-west-2\",\n                \"database\": \"c360view_stage\",\n                \"bucket\": \"c360view-${AWS::Region}-${AWS::AccountId}-stage\",\n                \"path\": \"athena_query_exec/regularoutput\",\n                \"deletebucket\": \"c360view-${AWS::Region}-${AWS::AccountId}-stage\",\n                \"deletelocation\": \"origination/card_pqt\",\n                \"drop\": \"DROP TABLE c360view_stage.card_pqt\",\n                \"query\": \"CREATE TABLE c360view_stage.card_pqt  WITH (        external_location = 's3://c360view-${AWS::Region}-${AWS::AccountId}-stage/origination/card_pqt/',        format = 'PARQUET'  )  AS  SELECT rs.card_id, rs.disp_id, rs.type, rs.issued_datetime, date_parse(rs.issued_datetime,'%Y-%m-%dT%H:%i:%s.%f') AS iss_date  FROM (          SELECT col0 as card_id, col1 as disp_id, col2 as type, col3 as issued_datetime, Rank()             over (Partition BY col1 ORDER BY col3 DESC) AS Rank          FROM c360view_raw.card   ) rs WHERE Rank <= 3  order by disp_id;\"\n                               }\n                             },\n                \"ResultPath\": \"$.taskresultcard\",\n                \"Next\": \"QueryResultcard\"\n              },\n            \"QueryResultcard\": {\n                \"Type\": \"Task\",\n                \"Resource\": \"${LambdaCheckAthenaExecution.Arn}\",\n                \"InputPath\" :\"$.taskresultcard.Payload\",\n                \"ResultPath\":\"$.queryexeccard\",\n                \"Next\": \"IsQueryFinishedcard\"\n              },\n            \"IsQueryFinishedcard\": {\n              \"Type\": \"Choice\",\n                  \"Choices\": [\n                      {\n                          \"Variable\": \"$.queryexeccard\",\n                          \"StringEquals\": \"RUNNING\",\n                          \"Next\": \"wait_one_secondcard\"\n                      },\n                      {\n                          \"Variable\": \"$.queryexeccard\",\n                          \"StringEquals\": \"QUEUED\",\n                          \"Next\": \"wait_3_secondcard\"\n                      }\n                  ],\n                  \"Default\": \"Donecard\"\n                  },\n            \"wait_3_secondcard\": {\n                \"Type\": \"Wait\",\n                \"Seconds\": 3,\n                \"Next\": \"QueryResultcard\"\n                },\n            \"wait_one_secondcard\": {\n                \"Type\": \"Wait\",\n                \"Seconds\": 1,\n                \"Next\": \"QueryResultcard\"\n                },\n            \"Donecard\": {\n                            \"Type\": \"Pass\",\n                            \"End\": true\n                }\n                }\n\n        },\n        { \"StartAt\": \"TransformTableGbank\",\n        \"States\": {\n            \"TransformTableGbank\": {\n              \"Type\": \"Task\",\n              \"Resource\": \"arn:aws:states:::lambda:invoke\",\n              \"Parameters\": {\n              \"FunctionName\": \"${LambdaAthenaExecution.Arn}\",\n              \"Payload\": {\n                \"region\": \"us-west-2\",\n                \"database\": \"c360view_stage\",\n                \"bucket\": \"c360view-${AWS::Region}-${AWS::AccountId}-stage\",\n                \"path\": \"athena_query_exec/regularoutput\",\n                \"deletebucket\": \"c360view-${AWS::Region}-${AWS::AccountId}-stage\",\n                \"deletelocation\": \"origination/gbank_pqt\",\n                \"drop\": \"DROP TABLE c360view_stage.gbank_pqt\",\n                \"query\": \"CREATE TABLE c360view_stage.gbank_pqt  WITH (        external_location = 's3://c360view-${AWS::Region}-${AWS::AccountId}-stage/origination/gbank_pqt/',        format = 'PARQUET'  )  AS    SELECT col0 as disp_id, col1 as account_id, col2 as client_id, col3 as type FROM c360view_raw.gbank;\"\n                               }\n                             },\n                \"ResultPath\": \"$.taskresultgbank\",\n                \"Next\": \"QueryResultgbank\"\n              },\n            \"QueryResultgbank\": {\n                \"Type\": \"Task\",\n                \"Resource\": \"${LambdaCheckAthenaExecution.Arn}\",\n                \"InputPath\" :\"$.taskresultgbank.Payload\",\n                \"ResultPath\":\"$.queryexecgbank\",\n                \"Next\": \"IsQueryFinishedgbank\"\n              },\n            \"IsQueryFinishedgbank\": {\n              \"Type\": \"Choice\",\n                  \"Choices\": [\n                      {\n                          \"Variable\": \"$.queryexecgbank\",\n                          \"StringEquals\": \"RUNNING\",\n                          \"Next\": \"wait_one_secondgbank\"\n                      },\n                      {\n                          \"Variable\": \"$.queryexecgbank\",\n                          \"StringEquals\": \"QUEUED\",\n                          \"Next\": \"wait_3_secondgbank\"\n                      }\n                  ],\n                  \"Default\": \"Donegbank\"\n                  },\n            \"wait_3_secondgbank\": {\n                \"Type\": \"Wait\",\n                \"Seconds\": 3,\n                \"Next\": \"QueryResultgbank\"\n                },\n            \"wait_one_secondgbank\": {\n                \"Type\": \"Wait\",\n                \"Seconds\": 1,\n                \"Next\": \"QueryResultgbank\"\n                },\n            \"Donegbank\": {\n                            \"Type\": \"Pass\",\n                            \"End\": true\n                }\n                }\n\n        }\n\n\n]\n},\n\n\n\n        \"TransactionSTG\": {\n            \"Type\": \"Task\",\n            \"Resource\": \"arn:aws:states:::lambda:invoke\",\n            \"Parameters\": {\n            \"FunctionName\": \"${LambdaAthenaExecution.Arn}\",\n            \"Payload\": {\n              \"region\": \"us-west-2\",\n              \"database\": \"c360view_stage\",\n              \"bucket\": \"c360view-${AWS::Region}-${AWS::AccountId}-stage\",\n              \"path\": \"athena_query_exec/regularoutput\",\n              \"deletebucket\": \"c360view-${AWS::Region}-${AWS::AccountId}-stage\",\n              \"deletelocation\": \"staging/transaction_stg/\",\n              \"drop\":\"SELECT 1;\",\n              \"query\": \"SELECT 1;\"\n            }\n          },\n              \"ResultPath\": \"$.taskresulttran\",\n              \"Next\": \"QueryResulttran\",\n              \"InputPath\": \"$.TransformData\"\n          },\n          \"QueryResulttran\": {\n            \"Type\": \"Task\",\n            \"Resource\": \"${LambdaCheckAthenaExecution.Arn}\",\n            \"InputPath\" :\"$.taskresulttran.Payload\",\n            \"ResultPath\":\"$.queryexectran\",\n            \"Next\": \"IsQueryFinishedtran\"\n          },\n          \"IsQueryFinishedtran\": {\n                    \"Type\": \"Choice\",\n                    \"Choices\": [\n                        {\n                            \"Variable\": \"$.queryexectran\",\n                            \"StringEquals\": \"RUNNING\",\n                            \"Next\": \"wait_one_secondtran\"\n                        },\n                        {\n                            \"Variable\": \"$.queryexectran\",\n                            \"StringEquals\": \"QUEUED\",\n                            \"Next\": \"wait_3_secondtran\"\n                        }\n                    ],\n                    \"Default\": \"Donetran\"\n                },\n            \"wait_3_secondtran\": {\n                \"Type\": \"Wait\",\n                \"Seconds\": 3,\n                \"Next\": \"QueryResulttran\"\n            },\n           \"wait_one_secondtran\": {\n                \"Type\": \"Wait\",\n                \"Seconds\": 1,\n                \"Next\": \"QueryResulttran\"\n            },\n            \"Donetran\": {\n              \"Type\": \"Pass\",\n              \"End\": true\n            }\n\n}\n}\n"
+                }
+            }
+        },
+        "MyStateMachineRelationalDB": {
+            "Type": "AWS::StepFunctions::StateMachine",
+            "Properties": {
+                "RoleArn": {
+                    "Fn::GetAtt": [
+                        "StatesExecutionRole",
+                        "Arn"
+                    ]
+                },
+                "DefinitionString": {
+                    "Fn::Sub": "{\n  \"Comment\": \"Step Functions integration with Athena through Lambda Functions.\",\n  \"StartAt\": \"RelationalDB\",\n  \"States\": {\n    \"RelationalDB\": {\n        \"Type\": \"Task\",\n        \"Resource\": \"arn:aws:states:::lambda:invoke\",\n        \"Parameters\": {\n        \"FunctionName\": \"${LambdaAthenaExecution.Arn}\",\n        \"Payload\": {\n          \"region\": \"us-west-2\",\n          \"database\": \"c360view_stage\",\n          \"bucket\": \"c360view-${AWS::Region}-${AWS::AccountId}-stage\",\n          \"path\": \"athena_query_exec/regularoutput\",\n          \"deletebucket\": \"c360view-${AWS::Region}-${AWS::AccountId}-stage\",\n          \"deletelocation\": \"db2/mf_transactions_pqt\",\n          \"drop\":\"DROP TABLE c360view_stage.mf_transactions_pqt;\",\n          \"query\": \"CREATE TABLE c360view_stage.mf_transactions_pqt  WITH (  external_location = 's3://c360view-${AWS::Region}-${AWS::AccountId}-stage/db2/mf_transactions_pqt/',  format = 'PARQUET'  )  AS  SELECT trans_id,          type,          operation,          amount,          balance,          replace(date, '\\\"','') as date,          date_parse(replace(date, '\\\"',''),'%Y-%m-%d %H:%i:%s.%f') AS tr_date, account_id  FROM c360view_raw.sourcemf_sourcemf_public_transactions;\"\n        }\n      },\n          \"ResultPath\": \"$.taskresulttran\",\n          \"Next\": \"QueryResulttran\"\n      },\n      \"QueryResulttran\": {\n        \"Type\": \"Task\",\n        \"Resource\": \"${LambdaCheckAthenaExecution.Arn}\",\n        \"InputPath\" :\"$.taskresulttran.Payload\",\n        \"ResultPath\":\"$.queryexectran\",\n        \"Next\": \"IsQueryFinishedtran\"\n      },\n      \"IsQueryFinishedtran\": {\n                \"Type\": \"Choice\",\n                \"Choices\": [\n                    {\n                        \"Variable\": \"$.queryexectran\",\n                        \"StringEquals\": \"RUNNING\",\n                        \"Next\": \"wait_one_secondtran\"\n                    },\n                    {\n                        \"Variable\": \"$.queryexectran\",\n                        \"StringEquals\": \"QUEUED\",\n                        \"Next\": \"wait_3_secondtran\"\n                    }\n                ],\n                \"Default\": \"Donetran\"\n            },\n        \"wait_3_secondtran\": {\n            \"Type\": \"Wait\",\n            \"Seconds\": 3,\n            \"Next\": \"QueryResulttran\"\n        },\n       \"wait_one_secondtran\": {\n            \"Type\": \"Wait\",\n            \"Seconds\": 1,\n            \"Next\": \"QueryResulttran\"\n        },\n        \"Donetran\": {\n          \"Type\": \"Pass\",\n          \"End\": true\n        }\n\n}\n}\n"
+                }
+            }
+        },
+        "Jobn1c360dispositions": {
+            "Type": "AWS::Glue::Job",
+            "Properties": {
+                "Command": {
+                    "Name": "glueetl",
+                    "ScriptLocation": {
+                        "Fn::Sub": "s3://c360view-${AWS::Region}-${AWS::AccountId}-stage/library/n1_c360_dispositions.py"
+                    },
+                    "PythonVersion": 3
+                },
+                "DefaultArguments": {
+                    "--BucketName": {
+                        "Fn::Sub": "c360view-${AWS::Region}-${AWS::AccountId}-stage"
+                    }
+                },
+                "ExecutionProperty": {
+                    "MaxConcurrentRuns": 2
+                },
+                "MaxRetries": 0,
+                "MaxCapacity": 1,
+                "Name": "n1_c360_dispositions",
+                "Role": {
+                    "Ref": "GlueExecutionRole"
+                }
+            }
+        },
+        "Jobcust360etlmftrans": {
+            "Type": "AWS::Glue::Job",
+            "Properties": {
+                "Command": {
+                    "Name": "glueetl",
+                    "ScriptLocation": {
+                        "Fn::Sub": "s3://c360view-${AWS::Region}-${AWS::AccountId}-stage/library/cust360_etl_mf_trans.py"
+                    },
+                    "PythonVersion": 3
+                },
+                "DefaultArguments": {
+                    "--BucketName": {
+                        "Fn::Sub": "c360view-${AWS::Region}-${AWS::AccountId}-stage"
+                    },
+                    "--extra-py-files": {
+                        "Fn::Sub": "s3://c360view-${AWS::Region}-${AWS::AccountId}-stage/library/awswrangler-0.0.12-glue-none-any.whl"
+                    }
+                },
+                "ExecutionProperty": {
+                    "MaxConcurrentRuns": 2
+                },
+                "MaxRetries": 0,
+                "MaxCapacity": 1,
+                "Name": "Jobcust360etlmftrans",
+                "Role": {
+                    "Ref": "GlueExecutionRole"
+                }
+            }
+        },
+        "Crawler360jobtables3m": {
+            "Type": "AWS::Glue::Crawler",
+            "Properties": {
+                "Name": "Crawler360jobtables3m",
+                "Role": {
+                    "Fn::GetAtt": [
+                        "GlueExecutionRole",
+                        "Arn"
+                    ]
+                },
+                "DatabaseName": "c360view_stage",
+                "Targets": {
+                    "S3Targets": [
+                        {
+                            "Path": {
+                                "Fn::Sub": "c360view-${AWS::Region}-${AWS::AccountId}-stage/c360_spark/n1_c360_trans_stats_type_l3m/"
+                            }
+                        }
+                    ]
+                },
+                "SchemaChangePolicy": {
+                    "UpdateBehavior": "UPDATE_IN_DATABASE",
+                    "DeleteBehavior": "LOG"
+                }
+            }
+        },
+        "Crawler360jobtables6m": {
+            "Type": "AWS::Glue::Crawler",
+            "Properties": {
+                "Name": "Crawler360jobtables6m",
+                "Role": {
+                    "Fn::GetAtt": [
+                        "GlueExecutionRole",
+                        "Arn"
+                    ]
+                },
+                "DatabaseName": "c360view_stage",
+                "Targets": {
+                    "S3Targets": [
+                        {
+                            "Path": {
+                                "Fn::Sub": "c360view-${AWS::Region}-${AWS::AccountId}-stage/c360_spark/n1_c360_trans_stats_type_l6m/"
+                            }
+                        }
+                    ]
+                },
+                "SchemaChangePolicy": {
+                    "UpdateBehavior": "UPDATE_IN_DATABASE",
+                    "DeleteBehavior": "LOG"
+                }
+            }
+        },
+        "Crawlerc360rawdata": {
+            "Type": "AWS::Glue::Crawler",
+            "Properties": {
+                "Name": "Crawlerc360rawdata",
+                "Role": {
+                    "Fn::GetAtt": [
+                        "GlueExecutionRole",
+                        "Arn"
+                    ]
+                },
+                "DatabaseName": "c360view_raw",
+                "Targets": {
+                    "S3Targets": [
+                        {
+                            "Path": {
+                                "Fn::Sub": "c360view-${AWS::Region}-${AWS::AccountId}-raw"
+                            }
+                        }
+                    ]
+                },
+                "SchemaChangePolicy": {
+                    "UpdateBehavior": "UPDATE_IN_DATABASE",
+                    "DeleteBehavior": "LOG"
+                }
+            }
+        },
+        "Crawlerc360visitorid": {
+            "Type": "AWS::Glue::Crawler",
+            "Properties": {
+                "Name": "Crawlerc360visitorid",
+                "Role": {
+                    "Fn::GetAtt": [
+                        "GlueExecutionRole",
+                        "Arn"
+                    ]
+                },
+                "DatabaseName": "c360view_stage",
+                "Targets": {
+                    "S3Targets": [
+                        {
+                            "Path": {
+                                "Fn::Sub": "c360view-${AWS::Region}-${AWS::AccountId}-stage/data/visitors/"
+                            }
+                        }
+                    ]
+                },
+                "SchemaChangePolicy": {
+                    "UpdateBehavior": "UPDATE_IN_DATABASE",
+                    "DeleteBehavior": "LOG"
+                }
+            }
+        },
+        "DDBc360view": {
+            "Type": "AWS::DynamoDB::Table",
+            "Properties": {
+                "AttributeDefinitions": [
+                    {
+                        "AttributeName": "pk",
+                        "AttributeType": "N"
+                    },
+                    {
+                        "AttributeName": "sk",
+                        "AttributeType": "S"
+                    }
+                ],
+                "TableName": "DDBc360view",
+                "KeySchema": [
+                    {
+                        "AttributeName": "pk",
+                        "KeyType": "HASH"
+                    },
+                    {
+                        "AttributeName": "sk",
+                        "KeyType": "RANGE"
+                    }
+                ],
+                "GlobalSecondaryIndexes": [
+                    {
+                        "IndexName": "GSI1",
+                        "KeySchema": [
+                            {
+                                "AttributeName": "sk",
+                                "KeyType": "HASH"
+                            }
+                        ],
+                        "Projection": {
+                            "ProjectionType": "ALL"
+                        },
+                        "ProvisionedThroughput": {
+                            "ReadCapacityUnits": 5,
+                            "WriteCapacityUnits": 5
+                        }
+                    }
+                ],
+                "ProvisionedThroughput": {
+                    "ReadCapacityUnits": 5,
+                    "WriteCapacityUnits": 5
+                }
+            }
+        }
+    }
+}
