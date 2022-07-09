@@ -16,6 +16,8 @@ This project uses some resources (AMIs) that are only available in us-west-2 hen
 
 ### Install the necessary node modules and bootstrap the CDK
 
+From the project root execute the following commands.
+
 ```
 npm install
 cdk boostrap
