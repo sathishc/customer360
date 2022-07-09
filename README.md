@@ -29,3 +29,43 @@ cdk boostrap
 cdk deploy
 ```
 
+
+
+The template has created the following resources to optimize your time. 
+
+1 EC2 Keypair
+
+1 S3 VPC Endpoint and a Secrets Manager Interface endpoint
+
+3 Amazon S3 buckets:
+
+    RawDataS3Bucket
+    StageDataS3Bucket
+    AnalyticsDataS3Bucket
+
+1 RDS instance with PostgreSQL database to simulate your transaction database.
+
+    RDSSource – sourcemf
+
+6 Lambda functions to generate data for different source.
+
+    c360viewCRMApi
+    c360viewGetCRMApi
+    c360viewGetGaTables
+    c360viewMFgenAccount
+    c360viewMFgenCard
+    c360viewMFgenGBank
+
+5 CloudWatch events schedules, to trigger the Lambda functions.
+
+2 Security group, firewalls, one for the EC2 instance, other for Replication instances and Lambda functions.
+
+1 Role for the AWS Lambda functions 1 Role for the AWS Glue
+
+1 Amazon EMR cluster
+
+Lakeformation registrations of S3 buckets created. 
+
+Check the status of each resource, and order by resource status.
+
+After you see "CREATE_COMPLETE" for the stack all resources are ready and you can proceed to next step Load Data.
