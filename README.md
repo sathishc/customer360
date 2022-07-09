@@ -31,7 +31,7 @@ cdk deploy
 
 
 
-The template has created the following resources to optimize your time. 
+### The template creates the following resources to optimize your time. 
 
 1 EC2 Keypair
 
