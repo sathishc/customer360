@@ -1,5 +1,9 @@
 # Welcome to your Customer 360 CDK project
 
+This project will deploy the following architecture components in your account
+
+[customer 360](customer360.png)
+
 ### To get started clone this repo into your local directory
 
 ```
