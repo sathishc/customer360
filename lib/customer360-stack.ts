@@ -13,10 +13,8 @@ export class Customer360Stack extends Stack {
   constructor(scope: Construct, id: string, props?: StackProps) {
     super(scope, id, props);
 
-    const sourceBucket = "hhug-360view";
-    const rdsPassword = "Tim3t0change";
 
-
+    // 1. EXECUTE THE CLOUDFORMATION TEMPLATE
     const defaultVpc = ec2.Vpc.fromLookup(this, 'DefaultVPC', { isDefault: true,});
 
     defaultVpc.addGatewayEndpoint("S3GatewayEndpoint",{
@@ -46,6 +44,7 @@ export class Customer360Stack extends Stack {
       },
     });
 
+    // 2. ======== RETRIVE AND REGISTER S3 buckets AS LAKEFORMATION LOCATIONS  ======//
     // retrieve the S3 buckets created - raw, stage, analytics
     const rawS3Bucket =  c360CfnTemplate.getResource("RawDataS3Bucket");
     const stageS3Bucket =  c360CfnTemplate.getResource("StageDataS3Bucket");
@@ -70,8 +69,8 @@ export class Customer360Stack extends Stack {
       useServiceLinkedRole: true,
     });
 
-    /*
-    // setup permissions
+    // 3. ======== SPECIFY DATA LOCATION PERMISSIONS  ======//
+    // setup permissions for data location access
     // retrieve the Glue execution role
     const serviceRole = c360CfnTemplate.getResource("GlueExecutionRole");
     // provide permissions to the role to the data lake locations
@@ -80,6 +79,7 @@ export class Customer360Stack extends Stack {
     new cdk.CfnOutput(this, 'glueExecRole', { value: glueExecutionRoleArn });
 
 
+    // 4. ======== SPECIFY ACCESS TO S3 LOCATIONS USING PERMISSIONS  ======//
     // grant access to the s3 locations
     new lakeformation.CfnPermissions(this, `rawS3Bucket-locationgrant`, {
       dataLakePrincipal: {
@@ -120,6 +120,9 @@ export class Customer360Stack extends Stack {
       permissionsWithGrantOption: []
     });
 
+    /*
+
+    // 5. ======== SPECIFY TABLE / COLUMN LEVEL PERMISSIONS  ======//
     // provide access to create tables in the databases
     new lakeformation.CfnPermissions(this, `rawS3Bucket-databaseGrant`, {
       dataLakePrincipal: {
@@ -207,4 +210,3 @@ export class Customer360Stack extends Stack {
 
   }
 }
-
