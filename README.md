@@ -1,14 +1,25 @@
-# Welcome to your CDK TypeScript project
+# Welcome to your Customer 360 CDK project
 
-This is a blank project for TypeScript development with CDK.
+### To get started clone this repo into your local directory
 
-The `cdk.json` file tells the CDK Toolkit how to execute your app.
+```
+git clone git@github.com:sathishc/customer360.git
+```
 
-## Useful commands
+### Configure your aws profile to point to the us-west2 region
 
-* `npm run build`   compile typescript to js
-* `npm run watch`   watch for changes and compile
-* `npm run test`    perform the jest unit tests
-* `cdk deploy`      deploy this stack to your default AWS account/region
-* `cdk diff`        compare deployed stack with current state
-* `cdk synth`       emits the synthesized CloudFormation template
+This project uses some resources (AMIs) that are only available in us-west-2 hence you need to create this project in that geo
+
+### Install the necessary node modules and bootstrap the CDK
+
+```
+npm install
+cdk boostrap
+```
+
+### Deploy the components
+
+```
+cdk deploy
+```
+
