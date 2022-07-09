@@ -3,7 +3,10 @@ import { Construct } from 'constructs';
 import * as cdk from 'aws-cdk-lib';
 import { aws_ec2 as ec2 } from 'aws-cdk-lib';
 import * as secretsManager from "aws-cdk-lib/aws-secretsmanager";
+import * as s3 from "aws-cdk-lib/aws-s3";
+import * as iam from "aws-cdk-lib/aws-iam";
 import * as cfn_inc from "aws-cdk-lib/cloudformation-include";
+import { aws_lakeformation as lakeformation } from 'aws-cdk-lib';
 
 
 export class Customer360Stack extends Stack {
@@ -43,6 +46,165 @@ export class Customer360Stack extends Stack {
       },
     });
 
+    // retrieve the S3 buckets created - raw, stage, analytics
+    const rawS3Bucket =  c360CfnTemplate.getResource("RawDataS3Bucket");
+    const stageS3Bucket =  c360CfnTemplate.getResource("StageDataS3Bucket");
+    const analyticsS3Bucket =  c360CfnTemplate.getResource("AnalyticsDataS3Bucket");
+
+    // register those as Lakformation locations
+    const rawBucketS3Arn = s3.Bucket.fromBucketName(this, "rawBucket",rawS3Bucket.ref).bucketArn
+    new lakeformation.CfnResource(this, 'RawS3BucketResource', {
+      resourceArn: rawBucketS3Arn,
+      useServiceLinkedRole: true,
+    });
+
+    const stageBucketS3Arn = s3.Bucket.fromBucketName(this, "stageBucket",stageS3Bucket.ref).bucketArn
+    new lakeformation.CfnResource(this, 'StageS3BucketResource', {
+      resourceArn: stageBucketS3Arn,
+      useServiceLinkedRole: true,
+    });
+
+    const analyticsBucketS3Arn = s3.Bucket.fromBucketName(this, "analyticsBucket",analyticsS3Bucket.ref).bucketArn
+    new lakeformation.CfnResource(this, 'AnalyticsS3BucketResource', {
+      resourceArn: analyticsBucketS3Arn,
+      useServiceLinkedRole: true,
+    });
+
+    /*
+    // setup permissions
+    // retrieve the Glue execution role
+    const serviceRole = c360CfnTemplate.getResource("GlueExecutionRole");
+    // provide permissions to the role to the data lake locations
+
+    const glueExecutionRoleArn = iam.Role.fromRoleName(this, "glueExRoleArn", serviceRole.ref).roleArn
+    new cdk.CfnOutput(this, 'glueExecRole', { value: glueExecutionRoleArn });
+
+
+    // grant access to the s3 locations
+    new lakeformation.CfnPermissions(this, `rawS3Bucket-locationgrant`, {
+      dataLakePrincipal: {
+        dataLakePrincipalIdentifier: glueExecutionRoleArn
+      },
+      resource: {
+        dataLocationResource: {
+          s3Resource: rawBucketS3Arn,
+        },            
+      },
+      permissions: ["DATA_LOCATION_ACCESS"],
+      permissionsWithGrantOption: []
+    });
+
+    new lakeformation.CfnPermissions(this, `stageS3Bucket-locationgrant`, {
+      dataLakePrincipal: {
+        dataLakePrincipalIdentifier: glueExecutionRoleArn
+      },
+      resource: {
+        dataLocationResource: {
+          s3Resource: stageBucketS3Arn,
+        },            
+      },
+      permissions: ["DATA_LOCATION_ACCESS"],
+      permissionsWithGrantOption: []
+    });
+
+    new lakeformation.CfnPermissions(this, `analyticsS3Bucket-locationgrant`, {
+      dataLakePrincipal: {
+        dataLakePrincipalIdentifier: glueExecutionRoleArn
+      },
+      resource: {
+        dataLocationResource: {
+          s3Resource: analyticsBucketS3Arn,
+        },            
+      },
+      permissions: ["DATA_LOCATION_ACCESS"],
+      permissionsWithGrantOption: []
+    });
+
+    // provide access to create tables in the databases
+    new lakeformation.CfnPermissions(this, `rawS3Bucket-databaseGrant`, {
+      dataLakePrincipal: {
+        dataLakePrincipalIdentifier: glueExecutionRoleArn
+      },
+      resource: {
+        databaseResource: {
+          name: 'c360view_raw',
+        },            
+      },
+      permissions: ["CREATE_TABLE"],
+      permissionsWithGrantOption: []
+    });
+
+    new lakeformation.CfnPermissions(this, `stageS3Bucket-databaseGrant`, {
+      dataLakePrincipal: {
+        dataLakePrincipalIdentifier: glueExecutionRoleArn
+      },
+      resource: {
+        databaseResource: {
+          name: 'c360view_stage',
+        },            
+      },
+      permissions: ["CREATE_TABLE"],
+      permissionsWithGrantOption: []
+    });
+
+    new lakeformation.CfnPermissions(this, `analyticsS3Bucket-databaseGrant`, {
+      dataLakePrincipal: {
+        dataLakePrincipalIdentifier: glueExecutionRoleArn
+      },
+      resource: {
+        databaseResource: {
+          name: 'c360view_analytics',
+        },            
+      },
+      permissions: ["CREATE_TABLE"],
+      permissionsWithGrantOption: []
+    });
+
+    
+    // grant access to tables
+    new lakeformation.CfnPermissions(this, `rawS3Bucket-tablegrant`, {
+      dataLakePrincipal: {
+        dataLakePrincipalIdentifier: glueExecutionRoleArn
+      },
+      resource: {
+        tableResource: {
+          databaseName: 'c360view_raw',
+          tableWildcard: { },
+        },            
+      },
+      permissions: ["ALTER","SELECT"],
+      permissionsWithGrantOption: ["ALTER","SELECT"]
+    });
+
+    new lakeformation.CfnPermissions(this, `stageS3Bucket-tablegrant`, {
+      dataLakePrincipal: {
+        dataLakePrincipalIdentifier: glueExecutionRoleArn
+      },
+      resource: {
+        tableResource: {
+          databaseName: 'c360view_stage',
+          tableWildcard: { },
+        },            
+      },
+      permissions: ["ALTER","SELECT"],
+      permissionsWithGrantOption: ["ALTER","SELECT"]
+    });
+
+    new lakeformation.CfnPermissions(this, `analyticsS3Bucket-tablegrant`, {
+      dataLakePrincipal: {
+        dataLakePrincipalIdentifier: glueExecutionRoleArn
+      },
+      resource: {
+        tableResource: {
+          databaseName: 'c360view_analytics',
+          tableWildcard: { },
+        },            
+      },
+      permissions: ["ALTER","SELECT"],
+      permissionsWithGrantOption: ["ALTER","SELECT"]
+    });
+    */
 
   }
 }
+
