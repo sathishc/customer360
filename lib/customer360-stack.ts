@@ -69,6 +69,7 @@ export class Customer360Stack extends Stack {
       useServiceLinkedRole: true,
     });
 
+    /*
     // 3. ======== SPECIFY DATA LOCATION PERMISSIONS  ======//
     // setup permissions for data location access
     // retrieve the Glue execution role
@@ -119,6 +120,7 @@ export class Customer360Stack extends Stack {
       permissions: ["DATA_LOCATION_ACCESS"],
       permissionsWithGrantOption: []
     });
+    */
 
     /*
 
