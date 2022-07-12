@@ -1,6 +1,6 @@
 # Welcome to your Customer 360 CDK project
 
-This project will deploy the following architecture components in your account
+This project will deploy the following architecture components in your account. Please ensure you are using the AWS us-west-2 region as we depend on some region specific resources for this stack to work.
 
 ![customer 360](./customer360.png)
 
